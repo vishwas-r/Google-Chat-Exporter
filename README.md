@@ -43,6 +43,12 @@ A Chrome extension that adds functionality to export Google Chat conversations t
 - Google Chrome browser (version 88 or higher recommended)
 - Access to Google Chat
 
+## Screenshots
+
+| Chrome Extension | Export Chart Option |
+|--------------|--------------|
+| ![Chrome Extension](images/chrome-extension.jpg) | ![Export Chat Option](images/chrome-extension-export-chat-option.jpg) |
+
 ## Troubleshooting
 
 ### "Export Chat Conversation" option doesn't appear
