@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Google Chat Exporter</title>
+  <style>
+    body {
+      width: 300px;
+      padding: 15px;
+      font-family: Arial, sans-serif;
+    }
+    h2 {
+      font-size: 18px;
+      margin-top: 0;
+      color: #1a73e8;
+    }
+    p {
+      font-size: 14px;
+      line-height: 1.5;
+      color: #444;
+      margin-bottom: 15px;
+    }
+    .instruction {
+      background: #f1f3f4;
+      padding: 10px;
+      border-radius: 4px;
+      margin-bottom: 10px;
+    }
+    .instruction-step {
+      margin-bottom: 5px;
+      display: flex;
+    }
+    .number {
+      display: inline-block;
+      background: #1a73e8;
+      color: white;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      text-align: center;
+      line-height: 20px;
+      margin-right: 8px;
+      flex-shrink: 0;
+    }
+    .step-text {
+      flex: 1;
+    }
+    footer {
+      font-size: 12px;
+      color: #666;
+      margin-top: 20px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <h2>Google Chat Exporter</h2>
+  <p>Export your Google Chat conversations to text files.</p>
+  
+  <div class="instruction">
+    <div class="instruction-step">
+      <span class="number">1</span>
+      <span class="step-text">Open a Google Chat conversation</span>
+    </div>
+    <div class="instruction-step">
+      <span class="number">2</span>
+      <span class="step-text">Right-click anywhere in the chat</span>
+    </div>
+    <div class="instruction-step">
+      <span class="number">3</span>
+      <span class="step-text">Select "Export Chat Conversation"</span>
+    </div>
+  </div>
+  
+  <p>The extension will load all messages and save them as a text file.</p>
+  
+  <footer>
+    Google Chat Exporter v1.0
+  </footer>
+</body>
+</html>

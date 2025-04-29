@@ -1,0 +1,41 @@
+{
+    "manifest_version": 3,
+    "name": "Google Chat Exporter",
+    "version": "1.0",
+    "description": "Export Google Chat conversations to text files",
+    "action": {
+      "default_popup": "popup.html",
+      "default_icon": {
+        "16": "icons/icon16.png",
+        "48": "icons/icon48.png",
+        "128": "icons/icon128.png"
+      }
+    },
+    "permissions": [
+      "activeTab",
+      "contextMenus",
+      "scripting"
+    ],
+    "host_permissions": [
+      "https://chat.google.com/*",
+      "https://mail.google.com/*"
+    ],
+    "background": {
+      "service_worker": "background.js"
+    },
+    "content_scripts": [
+      {
+        "matches": [
+          "https://chat.google.com/*",
+          "https://mail.google.com/*"
+        ],
+        "js": ["content.js"],
+        "all_frames": true
+      }
+    ],
+    "icons": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  }
