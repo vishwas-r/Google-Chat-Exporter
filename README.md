@@ -22,7 +22,7 @@ A Chrome extension that adds functionality to export Google Chat conversations t
 ## Installation
 
 ### From Chrome Web Store
-1. *Coming soon*
+https://chromewebstore.google.com/detail/google-chat-exporter/epemodmmmilflmhgojgonhfcjfjnflgc/
 
 ### Manual Installation (Developer Mode)
 1. Download or clone this repository to your local machine
