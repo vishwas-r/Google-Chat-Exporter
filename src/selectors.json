@@ -1,0 +1,83 @@
+{
+  "frameName": "single_full_screen",
+
+  "scrollContainers": [
+    ".Bl2pUd",
+    "[role=\"main\"]",
+    "div[data-is-scroll-wrapper=\"true\"]",
+    "[data-conversation-container]",
+    "c-wiz [role=\"list\"]"
+  ],
+
+  "messageGroups": "div.nF6pT",
+  "messageText": "div.DTp27d[jsname=\"bgckF\"], div.DTp27d.Zc1Emd, div.GDhqjd, div.vdlEi",
+  "messageBubble": "div.B8q9Gf",
+
+  "senderNameText": "span.njhDLd, span.zX8Xib, span.Un",
+  "senderNameAttr": "span.ZTmjQb[data-name]",
+  "timestamp": "span.FvYVyf, span.ud0FPb, [data-absolute-timestamp]",
+  "absoluteTimestampAttr": "[data-absolute-timestamp]",
+  "dateSeparator": "div.Ao1xUb[role=\"heading\"]",
+
+  "avatarImg": "img.hy2WD",
+  "avatarContainer": ".HTZBof",
+
+  "imageChip": "div.avsS6d",
+  "imageImg": "img.HQLhSc",
+  "imageButton": ".SMTuwf[data-action=\"7\"]",
+  "gifChip": "div.T0oWF",
+  "audioPlayer": "[data-media-type=\"audio\"]",
+  "videoPlayer": "[data-media-type=\"video\"]",
+  "videoLabel": "[aria-label^=\"Video,\"]",
+
+  "fileChip": "div.lRPruf",
+  "fileThumb": "img.INRavc",
+  "fileName": "span.RhNmFb",
+  "fileButton": "[data-action=\"7\"][title]",
+  "attachmentName": "span.RhNmFb",
+
+  "chipDownloadAnchor": ".zeIMme a[href*=\"DOWNLOAD_URL\"]",
+  "chipWrapperFallback": ".V5MAMb",
+  "downloadAnchorGeneric": "a[href*=\"DOWNLOAD_URL\"]",
+  "chipParentItem": "li",
+  "fallbackScrollable": "div",
+
+  "meetChip": "a.Pj9rof[href*=\"meet.google.com\"]",
+  "botCardWrapper": "div.bBOrFb",
+  "botCardText": "span.nr7tub",
+
+  "noiseSelectors": [
+    "[aria-hidden=\"true\"]",
+    "[role=\"tooltip\"]",
+    ".ne2Ple-oshW8e-V67aGc",
+    ".R7SUqc",
+    ".UgwGlb",
+    ".HO0hcf",
+    ".eWw5ab",
+    ".SE7v9",
+    ".oRJ94c",
+    "div[style=\"display: none;\"]",
+    "span[style=\"display: none;\"]"
+  ],
+
+  "conversationTitle": [
+    "header.QHAzdb[aria-label]",
+    "[role=\"main\"][aria-label]",
+    "span.mUIrbf-vQzf8d",
+    "[data-topic-name]",
+    "div.nfJ0Zd",
+    "h1"
+  ],
+
+  "attrs": {
+    "absoluteTimestamp": "data-absolute-timestamp",
+    "groupId": "data-id",
+    "senderName": "data-name",
+    "mediaUrl": "data-media-url",
+    "mediaDuration": "data-media-duration-ms",
+    "mediaSourceType": "data-media-source-type",
+    "ariaLabel": "aria-label",
+    "title": "title",
+    "href": "href"
+  }
+}

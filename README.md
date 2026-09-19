@@ -1,90 +1,84 @@
 # <a href="https://github.com/vishwas-r/Google-Chat-Exporter/"><img src="images/icon.svg" width="32" height="32" alt="Icon"></a> Google Chat Exporter
 
-[![Version](https://img.shields.io/badge/version-1.0.0-green.svg)](https://github.com/vishwas-r/Google-Chat-Exporter)
+[![Version](https://img.shields.io/badge/version-2.0.0-green.svg)](https://github.com/vishwas-r/Google-Chat-Exporter)
 [![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0.en.html)
 [![Maintenance](https://img.shields.io/badge/Maintained%3F-yes-green.svg)](https://github.com/vishwas-r/google-chat-exporter/graphs/commit-activity)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/vishwas-r/google-chat-exporter/pulls)
 [![Chrome Web Store](https://img.shields.io/badge/Chrome%20Extension-Available-blue.svg)](https://chromewebstore.google.com/detail/google-chat-exporter/epemodmmmilflmhgojgonhfcjfjnflgc)
 
+The ultimate, privacy-first browser extension for exporting Google Chat conversations to **Plain Text (TXT)** or **rich HTML with full media attachments (packaged in a ZIP)**.
 
-A Chrome extension that adds functionality to export Google Chat conversations to text files.
+Works across **Google Chrome, Brave, Microsoft Edge**, standalone PWA windows, and Gmail-embedded Chat.
 
-## Features
-- Export any Google Chat conversation to a plain text file
-- Works with both standalone chat.google.com and Gmail-integrated Google Chat
-- Intelligent message extraction that includes:
-  - Sender names
-  - Timestamps
-  - Message content
-- Preserves conversation history by scrolling to load older messages
-- Simple right-click context menu integration
+---
 
-## Installation
+## ✨ Features
+
+- **Dual Export Formats**:
+  - **Plain Text (`.txt`)**: Clean, formatted chronological transcript with senders, timestamps, and multi-line formatting preserved.
+  - **Structured HTML (`.html + .zip`)**: Complete conversational archive with sender avatars, speech bubbles, embedded images, GIFs, audio notes, video chips, documents, and Google Meet call links.
+- **Full Media Extraction**: Automatically downloads photos, GIFs, file attachments, and video previews into a neat `media/` folder inside the ZIP.
+- **Automatic History Loading**: Smoothly auto-scrolls up to retrieve past messages and conversation history.
+- **Bot & Card Message Support**: Extracts card notifications, webhooks, and bot messages (e.g., alert cards) seamlessly.
+- **Universal Compatibility**:
+  - Standalone Google Chat (`chat.google.com`)
+  - Gmail-integrated Google Chat (`mail.google.com`)
+  - Progressive Web App (PWA) / standalone window mode (fully tested and working in Brave & Chrome)
+- **Two Easy Export Methods**:
+  - **Popup UI**: Modern toolbar popup with live conversation detection, format selection, and progress monitoring.
+  - **Context Menu**: Right-click anywhere inside a conversation to export as TXT or HTML with media.
+- **Live Animated HUD**: Real-time progress indicator showing message count, scroll progress, and media download status.
+- **100% Private & Client-Side**: All parsing and ZIP generation happen inside your browser. No external servers, no tracking, zero telemetry.
+
+---
+
+## 📸 Screenshots
+
+| Feature Overview & Popup | Exported HTML Chat View |
+| :---: | :---: |
+| ![Features & Popup](images/screenshot-1-features.jpg) | ![HTML Export](images/screenshot-2-html-export.jpg) |
+
+---
+
+## 📥 Installation
 
 ### From Chrome Web Store
-https://chromewebstore.google.com/detail/google-chat-exporter/epemodmmmilflmhgojgonhfcjfjnflgc/
+Install directly from the official store:  
+👉 **[Google Chat Exporter on Chrome Web Store](https://chromewebstore.google.com/detail/google-chat-exporter/epemodmmmilflmhgojgonhfcjfjnflgc)**
 
 ### Manual Installation (Developer Mode)
-1. Download or clone this repository to your local machine
-2. Open Chrome and navigate to `chrome://extensions/`
-3. Enable "Developer mode" at the top right
-4. Click "Load unpacked" button
-5. Select the folder containing the extension files
-6. The extension should now be installed and ready to use
+1. Clone or download this repository.
+2. Open Chrome (or Brave / Edge) and go to `chrome://extensions/`.
+3. Toggle **Developer mode** on in the top right.
+4. Click **Load unpacked** and select the [`src/`](src) folder.
+5. The extension is installed and ready to use!
 
-## How to Use
-1. Navigate to [Google Chat](https://chat.google.com) or open Chat in Gmail
-2. Open the conversation you want to export
-3. Right-click anywhere within the chat conversation
-4. Select "Export Chat Conversation" from the context menu
-5. The extension will:
-   - Show a status indicator in the top right
-   - Automatically scroll to load older messages
-   - Extract all visible messages
-   - Download them as a text file named `google-chat-export-YYYY-MM-DD.txt`
+---
 
-## Requirements
-- Google Chrome browser (version 88 or higher recommended)
-- Access to Google Chat
+## 🚀 How to Use
 
-## Screenshots
-| Chrome Extension | Export Chart Option |
-|--------------|--------------|
-| ![Chrome Extension](images/chrome-extension.jpg) | ![Export Chat Option](images/chrome-extension-export-chat-option.jpg) |
+1. Navigate to [Google Chat](https://chat.google.com) or Gmail Chat.
+2. Click into any direct message or space.
+3. Choose either method:
+   - **Toolbar Popup**: Click the extension icon in your browser toolbar, select **HTML (with media)** or **TXT**, and click **Export Current Conversation**.
+   - **Right-Click**: Right-click anywhere within the chat message area and select **"📄 Export Chat as TXT"** or **"🌐 Export Chat as HTML (with media)"**.
+4. The animated status HUD will appear in the bottom-right corner as it scrolls history, extracts messages, and bundles media.
+5. Your export file (`.txt` or `.zip`) will download automatically to your Downloads folder.
 
-## Troubleshooting
+---
 
-### "Export Chat Conversation" option doesn't appear
-- Make sure you're right-clicking inside a Google Chat conversation frame
-- Try opening a specific chat first before attempting to export
-- Refresh the page and try again
+## 🔒 Privacy & Permissions
 
-### Export contains incomplete conversation history
-- Some very old messages might not load if they're beyond Google Chat's scroll limit
-- Try scrolling up manually first to load more history, then use the exporter
+- **Zero Data Collection**: No user messages, media, or analytics are collected or sent over the internet.
+- **Local Packaging**: HTML and ZIP archives are generated client-side using an offline bundling engine (`jszip`).
+- **Minimal Permissions**:
+  - `activeTab` & `scripting`: To read the chat DOM when initiated by you.
+  - `contextMenus`: For convenient right-click options.
+  - `downloads`: To save the exported file to your computer.
+  - `storage`: To remember your format preferences locally.
 
-### Export fails with no messages found
-- Check if you're in an empty conversation
-- Try clicking into a different chat and then back to the one you want to export
-- Refresh the page and try again
+---
 
-## How It Works
-This extension:
-1. Identifies the correct frame containing Google Chat content
-2. Adds a context menu option when right-clicking in chat
-3. When triggered, automatically scrolls up to load older messages
-4. Uses multiple parsing approaches to extract message content, senders, and timestamps
-5. Formats everything in a clean text file format
-6. Downloads the file to your computer
+## 📄 License
 
-## Privacy
-- This extension operates entirely within your browser
-- No data is sent to any external servers
-- All message extraction happens locally on your computer
-- No message content is stored by the extension
-
-## Contributing
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## License
-This project is licensed under the GNU General Public License v3.0 - see the LICENSE file for details.
+This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.

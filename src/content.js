@@ -1,487 +1,878 @@
-// Track if we're inside a valid chat frame
-var isInChatFrame = false;
+// ============================================================
+// Google Chat Exporter v2.0 — content.js
+// Runs in Google Chat tabs (normal, Gmail-embedded, PWA/app window)
+// 100% private: all extraction is local, zero external requests
+// ============================================================
 
-// Check if we're in the correct frame for Google Chat
-function detectChatFrame() {
-  // Check if this is the single_full_screen frame or contains chat content
-  var isSingleFullScreenFrame = window.name === 'single_full_screen';
-  var hasChatContent = document.querySelector('.Bl2pUd') || 
-                         document.querySelector('[role="main"]') ||
-                         document.querySelector('div[data-is-scroll-wrapper="true"]');
-  
-  isInChatFrame = isSingleFullScreenFrame || hasChatContent;
-  
-  // If we're in a frame with Google Chat content, log it
-  if (isInChatFrame) {
-    console.log('Google Chat Exporter: Chat frame detected');
-  }
-}
+'use strict';
 
-// Run frame detection when content script loads
-detectChatFrame();
+// ── Selector Configuration ──────────────────────────────────
+// Loaded from selectors.json; populated on init
+let SEL = null;
 
-// Create a notification overlay
-function createNotification(message, isError = false) {
-  var existingNotification = document.getElementById('gchat-exporter-notification');
-  if (existingNotification) {
-    existingNotification.remove();
-  }
-  
-  var notificationDiv = document.createElement('div');
-  notificationDiv.id = 'gchat-exporter-notification';
-  notificationDiv.style.position = 'fixed';
-  notificationDiv.style.top = '10px';
-  notificationDiv.style.right = '10px';
-  notificationDiv.style.background = isError ? 'rgba(220,53,69,0.9)' : 'rgba(0,0,0,0.8)';
-  notificationDiv.style.color = 'white';
-  notificationDiv.style.padding = '12px 16px';
-  notificationDiv.style.borderRadius = '8px';
-  notificationDiv.style.zIndex = '9999';
-  notificationDiv.style.fontFamily = 'Arial, sans-serif';
-  notificationDiv.style.fontSize = '14px';
-  notificationDiv.style.boxShadow = '0 2px 8px rgba(0,0,0,0.3)';
-  notificationDiv.style.maxWidth = '300px';
-  notificationDiv.textContent = message;
-  
-  document.body.appendChild(notificationDiv);
-  
-  // Auto-remove after 6 seconds
-  setTimeout(() => {
-    notificationDiv.style.opacity = '0';
-    notificationDiv.style.transition = 'opacity 0.5s ease';
-    
-    setTimeout(() => {
-      if (notificationDiv.parentNode) {
-        notificationDiv.parentNode.removeChild(notificationDiv);
+async function loadSelectors() {
+  if (SEL) return SEL;
+  try {
+    const url = chrome.runtime.getURL('selectors.json');
+    const resp = await fetch(url);
+    SEL = await resp.json();
+  } catch (err) {
+    console.error('[GCE] Failed to load selectors.json, using inline fallback:', err);
+    // Inline fallback so the extension still works even if resource load fails
+    SEL = {
+      frameName: 'single_full_screen',
+      scrollContainers: ['.Bl2pUd','[role="main"]','div[data-is-scroll-wrapper="true"]','[data-conversation-container]'],
+      messageGroups: 'div.nF6pT',
+      messageText: 'div.DTp27d[jsname="bgckF"], div.DTp27d.Zc1Emd, div.GDhqjd, div.vdlEi',
+      senderNameText: 'span.njhDLd, span.zX8Xib',
+      senderNameAttr: 'span.ZTmjQb[data-name]',
+      timestamp: 'span.FvYVyf, span.ud0FPb, [data-absolute-timestamp]',
+      absoluteTimestampAttr: '[data-absolute-timestamp]',
+      dateSeparator: 'div.Ao1xUb[role="heading"]',
+      imageChip: 'div.avsS6d',
+      imageImg: 'img.HQLhSc',
+      imageButton: '.SMTuwf[data-action="7"]',
+      gifChip: 'div.T0oWF',
+      audioPlayer: '[data-media-type="audio"]',
+      videoPlayer: '[data-media-type="video"]',
+      fileChip: 'div.lRPruf',
+      fileName: 'span.RhNmFb',
+      fileButton: '[data-action="7"][title]',
+      fileThumb: 'img.INRavc',
+      videoLabel: '[aria-label^="Video,"]',
+      avatarImg: 'img.hy2WD',
+      avatarContainer: '.HTZBof',
+      chipParentItem: 'li',
+      chipWrapperFallback: '.V5MAMb',
+      downloadAnchorGeneric: 'a[href*="DOWNLOAD_URL"]',
+      chipDownloadAnchor: '.zeIMme a[href*="DOWNLOAD_URL"]',
+      noiseSelectors: ['[aria-hidden="true"]','[role="tooltip"]','.R7SUqc','.UgwGlb'],
+      conversationTitle: ['header.QHAzdb[aria-label]','[role="main"][aria-label]','span.mUIrbf-vQzf8d','div.nfJ0Zd','h1'],
+      fallbackScrollable: 'div',
+      attrs: {
+        absoluteTimestamp: 'data-absolute-timestamp',
+        groupId: 'data-id',
+        senderName: 'data-name',
+        mediaUrl: 'data-media-url',
+        mediaDuration: 'data-media-duration-ms',
+        mediaSourceType: 'data-media-source-type',
+        ariaLabel: 'aria-label',
+        title: 'title',
+        href: 'href'
       }
-    }, 500);
-  }, 6000);
-  
-  return notificationDiv;
+    };
+  }
+  return SEL;
 }
 
-function showInstructions() {
-  if (window.top !== window.self) return;  
-  createNotification('Please open a Google Chat conversation first, then right-click and select "Export Chat Conversation"', true);
+// ── Frame Detection ─────────────────────────────────────────
+
+function isInChatFrame() {
+  if (!SEL) return false;
+  // Works for: normal tab, Gmail iframe (window.name), PWA standalone window
+  const byName = window.name === SEL.frameName;
+  const byContent = SEL.scrollContainers.some(sel => document.querySelector(sel));
+  return byName || byContent;
 }
 
-function exportChatConversation() {
-  console.log('Starting Google Chat text export...');
-  
-  // Scroll to load all messages - completely rebuilt
-  async function scrollToTop() {
-    console.log('Scrolling to load all messages...');
-    
-    // Find the scrollable container
-    var possibleContainers = [
-      document.querySelector('.Bl2pUd'), // Most common in Google Chat
-      document.querySelector('[role="main"]'),
-      document.querySelector('div[data-is-scroll-wrapper="true"]'),
-      document.querySelector('[data-conversation-container]'),
-      document.querySelector('.nH.aJl.nn'),
-      document.querySelector('.Bk'),
-      document.querySelector('.buA')
-    ].filter(Boolean);
-    
-    var container = possibleContainers[0];
-    
-    if (!container) {
-      console.error('Could not find scrollable container. Will attempt to extract visible messages only.');
-      return;
-    }
-    
-    console.log('Found scrollable container:', container);
-    
-    // Save initial scroll position and height
-    var initialScrollTop = container.scrollTop;
-    var initialScrollHeight = container.scrollHeight;
-    console.log('Initial scroll position:', initialScrollTop, 'Initial height:', initialScrollHeight);
-    
-    // Function to physically simulate scrolling to the top
-    async function simulateScrollingToTop() {
-      // Start position - current scroll position
-      var currentPosition = container.scrollTop;
-      console.log('Starting scroll simulation from position:', currentPosition);
-      
-      // Track previous heights to detect when no more content is loading
-      var previousHeight = container.scrollHeight;
-      var noChangeCount = 0;
-      
-      // Keep scrolling until we reach the top and no more content loads
-      while (true) {
-        // Scroll up by a smaller amount (600px) for more reliable loading
-        container.scrollTop = Math.max(0, currentPosition - 600);
-        currentPosition = container.scrollTop;
-        
-        // Log scroll position periodically
-        console.log('Scrolled to position:', currentPosition);
-        
-        // Wait for content to load
-        await new Promise(resolve => setTimeout(resolve, 800));
-        
-        // Check if we've reached the top
-        if (currentPosition === 0) {
-          // We're at the top, but let's check if content is still loading
-          var currentHeight = container.scrollHeight;
-          console.log('At top. Previous height:', previousHeight, 'Current height:', currentHeight);
-          
-          if (currentHeight === previousHeight) {
-            noChangeCount++;
-            console.log('No height change detected. Count:', noChangeCount);
-            
-            if (noChangeCount >= 3) {
-              console.log('No more messages loading. Exiting scroll loop.');
-              break;
-            }
-          } else {
-            // Height changed, reset counter and continue scrolling from top
-            noChangeCount = 0;
-            previousHeight = currentHeight;
-            console.log('More content loaded. Continuing to scroll.');
-          }
-        }
-        
-        // If we're at the top but height is still changing, scroll down a bit and then back up to trigger more loading
-        if (currentPosition === 0 && noChangeCount < 3) {
-          console.log('Scrolling down slightly to trigger more loading...');
-          container.scrollTop = 200;
-          await new Promise(resolve => setTimeout(resolve, 400));
-          currentPosition = container.scrollTop;
-        }
-        
-        // Safety check to prevent infinite loops
-        if (noChangeCount >= 10) {
-          console.log('Safety exit - possible scroll loop detected');
-          break;
-        }
+// ── Progress Overlay ────────────────────────────────────────
+
+let progressEl = null;
+
+function showProgress(text, percent, state = 'working') {
+  if (!progressEl) {
+    progressEl = document.createElement('div');
+    progressEl.id = 'gce-progress';
+
+    const style = document.createElement('style');
+    style.textContent = `
+      #gce-progress {
+        position: fixed;
+        bottom: 24px;
+        right: 24px;
+        z-index: 2147483647;
+        font-family: 'Google Sans', Roboto, sans-serif;
+        pointer-events: auto;
       }
-      
-      // Final log of the scroll results
-      var finalHeight = container.scrollHeight;
-      console.log('Scrolling completed. Initial height:', initialScrollHeight, 'Final height:', finalHeight);
-      console.log('Height difference:', finalHeight - initialScrollHeight);
-    }
-    
-    // Run the scroll simulation
-    await simulateScrollingToTop();
-    
-    // Final wait to ensure everything is loaded
-    console.log('Waiting for any remaining content to fully load...');
-    await new Promise(resolve => setTimeout(resolve, 1500));
-  }
-  
-  // Extract messages with improved filters and selectors
-  function extractMessages() {
-    console.log('Extracting messages...');
-    var exportText = '';
-    var messageCount = 0;
-    
-    // Identify the main conversation container
-    var chatContainer = document.querySelector('.Bl2pUd') || 
-                          document.querySelector('[role="main"]') ||
-                          document.querySelector('div[data-is-scroll-wrapper="true"]') ||
-                          document;
-    
-    console.log('Chat container found, searching for messages');
-    
-    // ====== APPROACH 1: Find message bubbles directly ======
-    // Updated selectors to target message bubble containers (most reliable in Google Chat)
-    var messageBubbles = chatContainer.querySelectorAll('div.GDhqjd, div.vdlEi');
-    console.log(`Found ${messageBubbles.length} message bubbles`);
-    
-    if (messageBubbles.length > 0) {
-      messageBubbles.forEach((bubble, index) => {
-        try {
-          // Find the sender in the bubble's parent structure
-          var sender = 'Unknown';
+      .gce-card {
+        background: #fff;
+        border-radius: 14px;
+        box-shadow: 0 8px 30px rgba(0,0,0,0.15), 0 2px 8px rgba(0,0,0,0.08);
+        width: 320px;
+        overflow: hidden;
+        animation: gce-slide-in 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+      }
+      @keyframes gce-slide-in {
+        from { transform: translateY(20px); opacity: 0; }
+        to { transform: translateY(0); opacity: 1; }
+      }
+      .gce-header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 14px 16px 10px;
+      }
+      .gce-spinner {
+        width: 18px;
+        height: 18px;
+        border: 2.5px solid #e0e0e0;
+        border-top-color: #1a73e8;
+        border-radius: 50%;
+        animation: gce-spin 0.7s linear infinite;
+        flex-shrink: 0;
+        transition: border-color 0.3s;
+      }
+      .gce-spinner.done { border-color: #34a853; border-top-color: #34a853; animation: none; }
+      .gce-spinner.error { border-color: #ea4335; border-top-color: #ea4335; animation: none; }
+      @keyframes gce-spin { to { transform: rotate(360deg); } }
+      .gce-label {
+        font-size: 13px;
+        color: #3c4043;
+        flex: 1;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        font-weight: 500;
+      }
+      .gce-close {
+        background: none;
+        border: none;
+        font-size: 18px;
+        color: #80868b;
+        cursor: pointer;
+        padding: 0 2px;
+        line-height: 1;
+        border-radius: 4px;
+        flex-shrink: 0;
+      }
+      .gce-close:hover { color: #3c4043; background: #f1f3f4; }
+      .gce-bar-wrap { height: 4px; background: #e8eaed; }
+      .gce-bar {
+        height: 100%;
+        background: #1a73e8;
+        width: 0%;
+        transition: width 0.4s ease, background 0.3s ease;
+        border-radius: 0 2px 2px 0;
+      }
+      .gce-bar.done { background: #34a853; }
+      .gce-bar.error { background: #ea4335; }
+    `;
+    document.documentElement.appendChild(style);
 
-          var senderElement = bubble.closest('div[jsmodel]')?.querySelector('span.zX8Xib, span.Un, span.njhDLd');
-          if (senderElement) {
-            sender = senderElement.textContent.trim();
-          }
-          
-          // Find the timestamp
-          var timestamp = '';
-          var timeElement = bubble.closest('div[jsmodel]')?.querySelector('span.FvYVyf, span.ud0FPb');
-          if (timeElement) {
-            timestamp = timeElement.textContent.trim();
-          }
-          
-          // Get the message content - direct from the bubble
-          var messageText = bubble.textContent.trim();
-          var cleanedMessage = cleanMessageString(`[${timestamp || 'No time'}] ${sender}: ${messageText}`);
-          
-          if (cleanedMessage && !cleanedMessage.includes('Add reaction') && !cleanedMessage.includes('More actions') && !cleanedMessage.includes('Quote in reply') && !cleanedMessage.includes('Edit')) {
-            exportText += `${cleanedMessage}\n\n`;
-            messageCount++;
-          }
-        } catch (err) {
-          console.warn(`Error processing message bubble ${index}:`, err);
-        }
-      });
-    }
-    
-    // ====== APPROACH 2: Find message by common containers ======
-    if (messageCount < 5) {
-      console.log('Few messages found with approach 1, trying approach 2');
-      
-      var messageContainers = chatContainer.querySelectorAll('div.nF6pT');
-      console.log(`Found ${messageContainers.length} message containers in approach 2`);
-      
-      messageContainers.forEach((container, index) => {
-        try {
-          // Extract sender
-          var senderElement = container.querySelector('span.zX8Xib, span.Un, span.njhDLd');
-          var sender = senderElement ? senderElement.textContent.trim() : 'Unknown';
-          
-          // Extract timestamp
-          var timeElement = container.querySelector('span.FvYVyf, span.ud0FPb');
-          var timestamp = timeElement ? timeElement.textContent.trim() : '';
-          
-          // Extract message content
-          // First try direct message content elements
-          var contentElement = container.querySelector('div.GDhqjd, div.vdlEi');
-          var messageText = contentElement ? contentElement.textContent.trim() : '';
-          
-          // If that didn't work, look for common text containers
-          if (!messageText) {
-            contentElement = container.querySelector('div.iOHNLd, div.TVitee, div.jU4nEd');
-            messageText = contentElement ? contentElement.textContent.trim() : '';
-          }
-          
-          // As a fallback, get all text excluding UI elements
-          if (!messageText) {
-            var allElements = Array.from(container.querySelectorAll('*'));
-            var textNodes = allElements.filter(el => {
-              var text = el.textContent.trim();
-              return text && 
-                 !text.includes('Edit') && 
-                     !text.includes('Add reaction') && 
-                     !text.includes('More actions') &&
-                     !text.includes('Reply in thread') &&
-                 !text.includes('Quote in reply') &&
-                     el.tagName !== 'BUTTON' &&
-                     !el.getAttribute('role')?.includes('button');
-            });
-            
-            if (textNodes.length > 0) {
-              messageText = textNodes.map(el => el.textContent.trim())
-                                    .filter((text, i, arr) => arr.indexOf(text) === i) // Remove duplicates
-                                    .join(' ');
-            }
-          }
-          var cleanedMessage = cleanMessageString(`[${timestamp || 'No time'}] ${sender}: ${messageText}`);
-          if (cleanedMessage && cleanedMessage.length > 0) {
-            exportText += `${cleanedMessage}\n\n`;
-            messageCount++;
-          }
-        } catch (err) {
-          console.warn(`Error processing message container ${index}:`, err);
-        }
-      });
-    }
-    
-    // ====== APPROACH 3: Use the most broadly applicable selectors ======
-    if (messageCount < 5) {
-      console.log('Few messages found with approach 2, trying approach 3');
-      
-      // Look for any elements that might contain message text
-      var allTextElements = chatContainer.querySelectorAll('div.iOHNLd, div.TVitee, div.jU4nEd, div[jsname="bgmYte"], div[jsname="z8tNhf"]');
-      console.log(`Found ${allTextElements.length} possible text elements in approach 3`);
-      
-      // Use a Set to track processed text to avoid duplicates
-      var processedTexts = new Set();
-      
-      allTextElements.forEach((element, index) => {
-        try {
-          var messageText = cleanMessageString(element.textContent.trim());
-          
-          // Skip if empty, UI text, or already processed
-          if (!messageText || 
-              messageText.includes('Add reaction') || 
-              messageText.includes('Edit') || 
-              messageText.includes('More actions') ||
-              messageText.includes('Reply in thread') ||
-              messageText.includes('Quote in reply') ||
-              processedTexts.has(messageText)) {
-            return;
-          }
-          
-          // Add to processed set
-          processedTexts.add(messageText);
-          
-          // Try to find sender and timestamp by traversing up
-          var currentNode = element;
-          var sender = 'Unknown';
-          var timestamp = '';
-          
-          // Look up to 5 parent levels for sender and timestamp
-          for (var i = 0; i < 5; i++) {
-            if (!currentNode.parentElement) break;
-            currentNode = currentNode.parentElement;
-            
-            // Try to find sender
-            var senderElement = currentNode.querySelector('span.zX8Xib, span.Un, [data-sender-name]');
-            if (senderElement) {
-              var potentialSender = senderElement.textContent.trim();
-              if (potentialSender && potentialSender !== messageText) {
-                sender = potentialSender;
-              }
-            }
-            
-            // Try to find timestamp
-            var timeElement = currentNode.querySelector('span.FvYVyf, span.ud0FPb, [data-absolute-timestamp]');
-            if (timeElement) {
-              timestamp = timeElement.textContent.trim();
-            }
-            
-            // If we found both, break early
-            if (sender !== 'Unknown' && timestamp) break;
-          }
-          var cleanedMessage = cleanMessageString(`[${timestamp || 'No time'}] ${sender}: ${messageText}`);
-          exportText += `${cleanedMessage}\n\n`;
-          messageCount++;
-          
-        } catch (err) {
-          console.warn(`Error processing text element ${index}:`, err);
-        }
-      });
-    }
-    
-    // Final approach - get ALL text content if we still have nothing
-    if (messageCount === 0) {
-      console.log('No messages found with regular approaches, using fallback approach');
-      
-      // Find all elements that might contain conversation text
-      var textElements = Array.from(document.querySelectorAll('div')).filter(div => {
-        // Filter elements that likely contain message content
-        var text = div.textContent.trim();
-        return text && 
-               text.length > 5 && 
-               text.length < 1000 &&
-               !text.includes('Add reaction') &&
-               !div.querySelector('button') &&
-               div.childElementCount < 5;
-      });
-      
-      console.log(`Found ${textElements.length} potential text elements in fallback approach`);
-      
-      // Use a Set to track processed text
-      var processedTexts = new Set();
-      
-      textElements.forEach((element, index) => {
-        try {
-          var text = element.textContent.trim();
-          
-          // Skip if already processed or too short
-          if (processedTexts.has(text) || text.length < 5) {
-            return;
-          }
-          
-          processedTexts.add(text);
-          exportText += text + '\n\n';
-          messageCount++;
-          
-        } catch (err) {
-          console.warn(`Error processing fallback element ${index}:`, err);
-        }
-      });
-    }
-    
-    console.log(`Extracted ${messageCount} messages`);
-    return exportText;
-  }
-  
-  // Download as text file
-  function downloadText(text) {
-    if (!text || text.length < 10) {
-      createNotification('No conversation text was found to export. Please try again with an open chat.', true);
-      return;
-    }
-    
-    console.log(`Exporting ${text.length} characters of conversation...`);
-    
-    var filename = 'google-chat-export-' + new Date().toISOString().split('T')[0] + '.txt';
-    var blob = new Blob([text], { type: 'text/plain' });
-    var url = URL.createObjectURL(blob);
-    var a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    
-    createNotification(`Export complete! Downloaded conversation as ${filename}`);
-  }
-  
-  function cleanMessageString(inputString) {
-    var headerMatch = inputString.match(/^\[(.*?)\] ([^:]+):/);
-    
-    if (!headerMatch) {
-      return inputString;
-    }
-    
-    var completeHeader = headerMatch[0];
-    var dateTime = headerMatch[1];
-    var username = headerMatch[2];
-    
-    var contentStartIndex = inputString.indexOf(completeHeader) + completeHeader.length;
-    var content = inputString.substring(contentStartIndex).trim();
-    
-    var escapedDateTime = dateTime.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    var escapedUsername = username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  
-    var dateTimePattern = new RegExp(escapedDateTime + '(\\s*,\\s*)?', 'g');
-    var usernamePattern = new RegExp(escapedUsername + '(\\s*,\\s*)?', 'g');
-    
-    var combinedPattern = new RegExp(escapedUsername + '\\s*,\\s*' + escapedDateTime + '(\\s*,\\s*)?', 'g');
-    
-    content = content.replace(combinedPattern, '');
-    content = content.replace(dateTimePattern, '');
-    content = content.replace(usernamePattern, '');
-    
-    content = content.replace(/\s*,\s*,\s*/g, ''); // Multiple commas
-    content = content.replace(/^\s*,\s*/g, '');    // Leading commas
-    content = content.replace(/\s*,\s*$/g, '');    // Trailing commas
-    content = content.replace(/\s+/g, ' ').trim(); // Extra whitespace
-    
-    return completeHeader + ' ' + content;
-  }
-  
-  async function runExport() {
-    try {
-      var statusDiv = createNotification('⏳ Loading older messages... (Scrolling to top)');
-      await scrollToTop();
-      statusDiv.textContent = '📝 Extracting conversation...';
-      await new Promise(resolve => setTimeout(resolve, 300));
-      var conversationText = extractMessages();
-      statusDiv.textContent = '💾 Preparing download...';
+    progressEl.innerHTML = `
+      <div class="gce-card">
+        <div class="gce-header">
+          <div class="gce-logo" style="width:22px;height:22px;flex-shrink:0;display:flex;align-items:center;">
+            <svg width="22" height="22" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" style="border-radius:4px;">
+              <rect width="512" height="512" rx="40" fill="#f8f9fa"/>
+              <g transform="translate(56, 56) scale(1.25)">
+                <path d="M76.37 0.51l0.01 76.47L0 76.96V20.77c0.567-3.973 1.743-7.31 3.53-10.01C7.937 4.08 14.343 0.717 22.75 0.67 40.523 0.577 58.397 0.523 76.37 0.51z" fill="#0066da"/>
+                <path d="M76.37 0.51l157.42 0.02c0.332 0 0.653 0.101 0.92 0.29l0.37 0.27c-0.107 0.04-0.197 0.083-0.27 0.13a0.297 0.297 0 00-0.17 0.28l-0.02 75.51H76.41l-0.03-0.03L76.37 0.51z" fill="#fbbc04"/>
+                <path d="M235.08 1.09l75.45 75.68-75.91 0.24 0.02-75.51c0-0.127 0.057-0.22 0.17-0.28 0.073-0.047 0.163-0.09 0.27-0.13z" fill="#ea4335"/>
+                <path d="M0 76.96l76.38 0.02 0.03 0.03 0.02 105.68L0 182.67V76.96z" fill="#2684fc"/>
+                <path d="M310.53 76.77l0.47 0.34v161.9c-1.773 9.687-6.793 15.943-15.06 18.77-2.947 1.013-7.29 1.513-13.03 1.5-37.26-0.06-74.9-0.117-112.92-0.17-5.52-0.007-11.12 0.033-16.8 0.12-0.313 0.007-0.58 0.12-0.8 0.34a15823.329 15823.329 0 00-56 56.02c-2.87 2.89-6.12 4.5-10.24 3.89-3.84-0.567-6.67-2.547-8.49-5.94-0.767-1.44-1.157-4.067-1.17-7.88-0.047-15.46-0.063-30.97-0.05-46.53l-0.01-38.28 37.78-37.78c0.332-0.333 0.786-0.52 1.26-0.52l118.3 0.04c0.455 0 0.83-0.375 0.83-0.83l-0.03-104.75h0.05l75.91-0.24z" fill="#00ac47"/>
+                <path d="M76.43 182.69v38.16l0.01 38.28c-15.98 0.093-31.823 0.123-47.53 0.09-6.547-0.013-11.263-0.527-14.15-1.54-8.093-2.827-13.013-9.093-14.76-18.8v-56.21l76.43 0.02z" fill="#00832d"/>
+              </g>
+              <circle cx="380" cy="380" r="90" fill="#ffffff" />
+              <circle cx="380" cy="380" r="85" fill="#ffffff" stroke="#e8eaed" stroke-width="5" />
+              <g transform="translate(345, 325)">
+                <path d="M35,0 L35,65" stroke="#1a73e8" stroke-width="18" stroke-linecap="round" />
+                <path d="M5,40 L35,70 L65,40" stroke="#1a73e8" stroke-width="18" stroke-linecap="round" stroke-linejoin="round" fill="none" />
+                <rect x="5" y="85" width="60" height="12" rx="6" fill="#34a853" />
+              </g>
+            </svg>
+          </div>
+          <div class="gce-spinner"></div>
+          <span class="gce-label">Initializing...</span>
+          <button class="gce-close" title="Dismiss">&times;</button>
+        </div>
+        <div class="gce-bar-wrap"><div class="gce-bar"></div></div>
+      </div>`;
 
-      downloadText(conversationText);
-      
-    } catch (error) {
-      console.error('Error exporting conversation:', error);
-      createNotification('Error exporting conversation. Please try again.', true);
-    }
+    document.documentElement.appendChild(progressEl);
+    progressEl.querySelector('.gce-close').addEventListener('click', hideProgress);
   }
-  
-  runExport();
+
+  const label = progressEl.querySelector('.gce-label');
+  const bar = progressEl.querySelector('.gce-bar');
+  const spinner = progressEl.querySelector('.gce-spinner');
+
+  if (label) label.textContent = text;
+  if (bar) {
+    bar.style.width = percent + '%';
+    bar.className = 'gce-bar' + (state === 'done' ? ' done' : state === 'error' ? ' error' : '');
+  }
+  if (spinner) {
+    spinner.className = 'gce-spinner' + (state === 'done' ? ' done' : state === 'error' ? ' error' : '');
+  }
+
+  // Relay to background for popup display
+  try {
+    chrome.runtime.sendMessage({ action: 'exportStateUpdate', text, percent, state });
+  } catch { /* service worker may be inactive */ }
 }
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.action === "exportChatConversation") {
-    detectChatFrame();
-    
-    if (isInChatFrame) {
-      console.log('Google Chat Exporter: Starting export in chat frame');
-      exportChatConversation();
+function hideProgress() {
+  if (progressEl) {
+    progressEl.remove();
+    progressEl = null;
+  }
+}
+
+// ── Scroll to Load All Messages ─────────────────────────────
+
+function findScrollContainer() {
+  for (const sel of SEL.scrollContainers) {
+    const el = document.querySelector(sel);
+    if (el && el.scrollHeight > el.clientHeight) return el;
+  }
+  // Dynamic fallback: find the tallest scrollable div
+  let best = null, bestH = 0;
+  for (const el of document.querySelectorAll(SEL.fallbackScrollable)) {
+    if (el.scrollHeight > el.clientHeight + 100 && el.scrollHeight > bestH) {
+      const style = getComputedStyle(el);
+      if (style.overflowY === 'auto' || style.overflowY === 'scroll') {
+        best = el;
+        bestH = el.scrollHeight;
+      }
+    }
+  }
+  return best;
+}
+
+async function scrollToLoadAll(onProgress, dateFromTs = 0) {
+  const container = findScrollContainer();
+  if (!container) {
+    onProgress && onProgress('No scroll container found — exporting visible messages only');
+    return null;
+  }
+
+  const dedupMap = new Map();
+  const collectCurrent = () => {
+    for (const msg of extractMessages()) {
+      const key = msg._dedupKey || `${msg.sender}|${msg.absoluteTimestamp}|${(msg.text || '').slice(0, 80)}`;
+      if (!dedupMap.has(key)) dedupMap.set(key, msg);
+    }
+  };
+
+  collectCurrent();
+  let prevHeight = container.scrollHeight;
+  let noChangeCount = 0;
+  let iterations = 0;
+  const MAX_ITER = 600;
+
+  onProgress && onProgress('Scrolling up to load full history...');
+
+  while (iterations < MAX_ITER) {
+    iterations++;
+
+    // Stop early if we've passed our date range
+    if (dateFromTs && iterations % 3 === 0) {
+      const oldest = getOldestTimestamp();
+      if (oldest && oldest < dateFromTs) {
+        onProgress && onProgress('Reached date range boundary — stopping scroll.');
+        break;
+      }
+    }
+
+    container.scrollTop = Math.max(0, container.scrollTop - 600);
+    await sleep(500);
+
+    if (iterations % 3 === 0) collectCurrent();
+
+    const curHeight = container.scrollHeight;
+
+    if (container.scrollTop === 0) {
+      if (curHeight === prevHeight) {
+        noChangeCount++;
+        if (noChangeCount >= 4) break;
+        // Nudge to trigger lazy load
+        container.scrollTop = 150;
+        await sleep(300);
+      } else {
+        noChangeCount = 0;
+        prevHeight = curHeight;
+      }
+    }
+
+    if (iterations % 5 === 0) {
+      onProgress && onProgress(`Loading history... ${dedupMap.size} messages collected`);
+    }
+  }
+
+  collectCurrent();
+  await sleep(300);
+  onProgress && onProgress(`Scroll complete. ${dedupMap.size} messages collected.`);
+
+  const sorted = [...dedupMap.values()].sort(
+    (a, b) => (a.absoluteTimestamp || 0) - (b.absoluteTimestamp || 0)
+  );
+  return sorted;
+}
+
+function getOldestTimestamp() {
+  const el = document.querySelector(SEL.messageGroups);
+  const ts = el && el.querySelector(SEL.absoluteTimestampAttr);
+  return ts ? parseInt(ts.getAttribute(SEL.attrs.absoluteTimestamp), 10) || 0 : 0;
+}
+
+// ── Message Extraction ──────────────────────────────────────
+
+function getConversationName() {
+  for (const sel of SEL.conversationTitle) {
+    const el = document.querySelector(sel);
+    if (el) {
+      const label = el.getAttribute('aria-label');
+      const text = cleanText(label || el.textContent);
+      if (text && text.length > 0 && text.length < 120) return text;
+    }
+  }
+  return '';
+}
+
+function extractMessages() {
+  const results = [];
+  const seen = new Set();
+
+  // Build date separator positions for date association
+  const dateSeps = [];
+  document.querySelectorAll(SEL.dateSeparator).forEach(el => {
+    const text = cleanText(el.textContent);
+    if (text) dateSeps.push({ text, top: el.getBoundingClientRect().top });
+  });
+
+  const groups = document.querySelectorAll(SEL.messageGroups);
+  for (const group of groups) {
+    const msgs = extractFromGroup(group, dateSeps);
+    for (let i = 0; i < msgs.length; i++) {
+      const msg = msgs[i];
+      const hasMedia = msg.media && msg.media.length > 0;
+      if (!msg.text && !hasMedia) continue;
+
+      const groupId = group.getAttribute(SEL.attrs.groupId) || '';
+      const key = groupId ? `${groupId}/${i}` : `${msg.sender}|${msg.absoluteTimestamp}|${(msg.text || '').slice(0, 80)}`;
+      msg._dedupKey = key;
+
+      if (!seen.has(key)) {
+        seen.add(key);
+        results.push(msg);
+      }
+    }
+  }
+
+  // Fallback: try individual message text elements
+  if (results.length === 0) {
+    document.querySelectorAll(SEL.messageText).forEach(el => {
+      const text = getCleanText(el);
+      if (!text || text.length < 1) return;
+      const key = '_|' + text;
+      if (seen.has(key)) return;
+      seen.add(key);
+      const { sender, timestamp } = findSenderAndTime(el);
+      results.push({ sender, timestamp, absoluteTimestamp: 0, text, date: '', media: [], _dedupKey: key });
+    });
+  }
+
+  return results;
+}
+
+function extractFromGroup(group, dateSeps) {
+  const results = [];
+
+  // Sender
+  let sender = 'Unknown';
+  const senderAttrEl = group.querySelector(SEL.senderNameAttr);
+  if (senderAttrEl) {
+    const nameAttr = senderAttrEl.getAttribute(SEL.attrs.senderName);
+    const nameText = group.querySelector(SEL.senderNameText);
+    sender = (nameText ? cleanText(nameText.textContent) : '') || nameAttr || 'Unknown';
+  } else {
+    const nameText = group.querySelector(SEL.senderNameText);
+    if (nameText) sender = cleanText(nameText.textContent) || 'Unknown';
+  }
+
+  // Avatar
+  let avatarUrl = '';
+  const avatarContainer = group.querySelector(SEL.avatarContainer);
+  const avatarImg = avatarContainer ? avatarContainer.querySelector(SEL.avatarImg) : null;
+  if (avatarImg && avatarImg.src) {
+    // Normalize to a reasonable size
+    avatarUrl = avatarImg.src.replace(/=s\d+-w\d+-h\d+/, '=s64-w64-h64');
+  }
+
+  // Timestamp
+  let timestamp = '';
+  let absoluteTimestamp = 0;
+  const tsEl = group.querySelector(SEL.timestamp);
+  if (tsEl) {
+    timestamp = cleanText(tsEl.textContent);
+    const tsAttr = tsEl.getAttribute(SEL.attrs.absoluteTimestamp);
+    if (tsAttr) absoluteTimestamp = parseInt(tsAttr, 10) || 0;
+  }
+
+  // Date association
+  let date = '';
+  if (dateSeps.length > 0) {
+    const groupTop = group.getBoundingClientRect().top;
+    for (let i = dateSeps.length - 1; i >= 0; i--) {
+      if (dateSeps[i].top <= groupTop) { date = dateSeps[i].text; break; }
+    }
+    if (!date) date = dateSeps[0].text;
+  }
+
+  // Message text elements
+  const textEls = group.querySelectorAll(SEL.messageText);
+  for (const el of textEls) {
+    const text = getCleanText(el);
+    if (text) results.push({ sender, timestamp, absoluteTimestamp, date, avatarUrl, text, media: [] });
+  }
+
+  // ── Bot / Card messages (e.g. Login AlertX, Geo-PulseX) ──
+  // These use div.bBOrFb > ... > span.nr7tub instead of div.DTp27d
+  if (results.length === 0) {
+    const cardBody = group.querySelector('div.bBOrFb');
+    if (cardBody) {
+      const cardLines = [];
+      cardBody.querySelectorAll('span.nr7tub').forEach(span => {
+        const t = cleanText(span.textContent);
+        if (t) cardLines.push(t);
+      });
+      if (cardLines.length > 0) {
+        results.push({ sender, timestamp, absoluteTimestamp, date, avatarUrl, text: cardLines.join('\n'), media: [] });
+      }
+    }
+  }
+
+  // ── Meet / video call chips ──
+  // Rendered as a.Pj9rof[href*="meet.google.com"] — NO DTp27d element exists
+  if (results.length === 0) {
+    const meetLinks = group.querySelectorAll('a[href*="meet.google.com"]');
+    for (const a of meetLinks) {
+      const href = a.href || a.getAttribute('href') || '';
+      if (!href) continue;
+      const label = a.getAttribute('title') || a.getAttribute('aria-label')?.split(',')[0] || 'Join video meeting';
+      results.push({ sender, timestamp, absoluteTimestamp, date, avatarUrl, text: `${label}: ${href}`, media: [] });
+    }
+  }
+
+  // ── Generic link chip fallback ──
+  // For any remaining empty message groups that have a link (e.g. other chips)
+  if (results.length === 0) {
+    const seenUrls = new Set();
+    group.querySelectorAll('a[href^="http"]').forEach(a => {
+      const href = a.href || '';
+      if (!href || seenUrls.has(href)) return;
+      // Skip chrome-extension internal links
+      if (href.startsWith('chrome-extension://')) return;
+      seenUrls.add(href);
+      const label = cleanText(a.getAttribute('title') || a.textContent) || href;
+      results.push({ sender, timestamp, absoluteTimestamp, date, avatarUrl, text: label !== href ? `${label}: ${href}` : href, media: [] });
+    });
+  }
+
+  // Media
+  const media = extractMedia(group);
+  if (media.length > 0) {
+    if (results.length > 0) {
+      results[results.length - 1].media = media;
     } else {
-      chrome.runtime.sendMessage({ status: "no_chat_frame" });
+      results.push({ sender, timestamp, absoluteTimestamp, date, avatarUrl, text: '', media });
     }
-  } else if (message.action === "showInstructions") {
-    showInstructions();
   }
-  
-  return true; // Required for async response
+
+  return results;
+}
+
+function extractMedia(group) {
+  const media = [];
+
+  // Images
+  for (const chip of group.querySelectorAll(SEL.imageChip)) {
+    const img = chip.querySelector(SEL.imageImg);
+    const btn = chip.querySelector(SEL.imageButton);
+    if (img && img.src) {
+      const name = (btn?.getAttribute(SEL.attrs.title) || 'image.png').trim() || 'image.png';
+      const ext = name.split('.').pop()?.toLowerCase() || 'png';
+      media.push({ type: 'image', url: img.src, name, mimeType: mimeFromExt(ext) });
+    }
+  }
+
+  // GIFs / stickers
+  for (const chip of group.querySelectorAll(SEL.gifChip)) {
+    if (chip.closest(SEL.imageChip)) continue; // avoid double-counting
+    const img = chip.querySelector(SEL.imageImg);
+    if (img && img.src) {
+      const parts = img.src.split('/');
+      let name = parts[parts.length - 1] || 'sticker';
+      if (!name.includes('.')) name += '.gif';
+      media.push({ type: 'gif', url: img.src, name, mimeType: 'image/gif' });
+    }
+  }
+
+  // Audio (voice messages)
+  for (const player of group.querySelectorAll(SEL.audioPlayer)) {
+    const url = decodeHtmlEntities(player.getAttribute(SEL.attrs.mediaUrl) || '');
+    if (!url) continue;
+    const durationMs = parseFloat(player.getAttribute(SEL.attrs.mediaDuration) || '0');
+    const sourceType = player.getAttribute(SEL.attrs.mediaSourceType) || 'audio/mpeg';
+    const ext = sourceType.includes('mp4') ? 'mp4' : 'mp3';
+    media.push({ type: 'audio', url, name: `voice_message.${ext}`, mimeType: sourceType.startsWith('audio/') ? sourceType : 'audio/mpeg', durationMs });
+  }
+
+  // Videos
+  const videoSeen = new Set();
+  for (const player of group.querySelectorAll(SEL.videoPlayer)) {
+    const rawUrl = player.getAttribute(SEL.attrs.mediaUrl) || '';
+    if (!rawUrl) continue;
+    const url = decodeHtmlEntities(rawUrl.replace('url_type=STREAMING_URL', 'url_type=DOWNLOAD_URL'));
+    const fallbackUrl = rawUrl !== url ? decodeHtmlEntities(rawUrl) : '';
+    const durationMs = parseFloat(player.getAttribute(SEL.attrs.mediaDuration) || '0');
+
+    const labelEl = player.querySelector(SEL.videoLabel) || player.closest(SEL.videoLabel);
+    let name = 'video.mp4';
+    if (labelEl) {
+      const m = (labelEl.getAttribute(SEL.attrs.ariaLabel) || '').match(/^Video,\s*(.+)\.\s+\d+\s+(?:second|minute|hour)/);
+      if (m) {
+        name = m[1].trim();
+        if (!/\.[a-zA-Z0-9]{2,5}$/.test(name)) name += '.mp4';
+      }
+    }
+
+    const ctMatch = (rawUrl || '').match(/content_type=([^&]+)/);
+    const mimeType = ctMatch ? decodeURIComponent(ctMatch[1]) : 'video/mp4';
+
+    const fileChipEl = player.closest(SEL.fileChip);
+    if (fileChipEl) videoSeen.add(fileChipEl);
+
+    media.push({ type: 'video', url, fallbackUrl, name, mimeType: mimeType.startsWith('video/') ? mimeType : 'video/mp4', durationMs });
+  }
+
+  // File attachments
+  for (const chip of group.querySelectorAll(SEL.fileChip)) {
+    if (videoSeen.has(chip)) continue;
+    const nameEl = chip.querySelector(SEL.fileName);
+    const btnEl = chip.querySelector(SEL.fileButton);
+    const thumbEl = chip.querySelector(SEL.fileThumb);
+    const name = nameEl ? cleanText(nameEl.textContent) : (btnEl?.getAttribute(SEL.attrs.title) || 'file');
+    const thumbUrl = thumbEl?.src || '';
+    const type = detectChipType(btnEl?.getAttribute(SEL.attrs.ariaLabel) || '', thumbUrl, name);
+    const downloadUrl = findChipDownloadUrl(chip, thumbUrl);
+    const ctMatch = (thumbUrl || downloadUrl || '').match(/content_type=([^&]+)/);
+    const mimeType = ctMatch ? decodeURIComponent(ctMatch[1]) : guessMimeFromName(name);
+
+    media.push({ type, url: downloadUrl, fallbackUrl: type === 'video' ? '' : undefined, thumbUrl: type === 'file' ? thumbUrl : undefined, name, mimeType });
+  }
+
+  return media;
+}
+
+// ── DOM Helpers ─────────────────────────────────────────────
+
+/**
+ * Extracts clean text from an element, preserving meaningful line breaks.
+ * Handles <br>, <div>, <p> block boundaries so multi-line messages stay multi-line.
+ */
+function getCleanText(el) {
+  if (!el) return '';
+  const clone = el.cloneNode(true);
+  // Remove noise elements
+  for (const noiseSel of SEL.noiseSelectors) {
+    try { clone.querySelectorAll(noiseSel).forEach(n => n.remove()); } catch {}
+  }
+  // Replace <br> with newline markers
+  clone.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
+  // Insert newlines after block-level elements so paragraphs are separated
+  clone.querySelectorAll('p, div').forEach(el => {
+    if (el.nextSibling) el.insertAdjacentText('afterend', '\n');
+  });
+  return cleanMessageText(clone.textContent);
+}
+
+/**
+ * Cleans message body text — preserves internal line breaks, collapses excess whitespace per line.
+ */
+function cleanMessageText(str) {
+  if (!str) return '';
+  return str
+    .replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+    .split('\n')
+    .map(line => line.replace(/[ \t]+/g, ' ').trim())
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/**
+ * Cleans single-line UI text (sender names, timestamps, date separators).
+ * Collapses all whitespace to a single space.
+ */
+function cleanText(str) {
+  return (str || '').replace(/\s+/g, ' ').trim();
+}
+
+function findSenderAndTime(el) {
+  let node = el;
+  for (let i = 0; i < 8 && node?.parentElement; i++) {
+    node = node.parentElement;
+    if (node.matches && node.matches(SEL.messageGroups)) {
+      const senderEl = node.querySelector(SEL.senderNameAttr) || node.querySelector(SEL.senderNameText);
+      const tsEl = node.querySelector(SEL.timestamp);
+      return {
+        sender: senderEl ? cleanText(senderEl.textContent) : 'Unknown',
+        timestamp: tsEl ? cleanText(tsEl.textContent) : ''
+      };
+    }
+  }
+  return { sender: 'Unknown', timestamp: '' };
+}
+
+function detectChipType(ariaLabel, thumbUrl, name) {
+  if (/^Video,/i.test(ariaLabel)) return 'video';
+  if (/^Audio,/i.test(ariaLabel)) return 'audio';
+  if (/^Image,/i.test(ariaLabel)) return 'image';
+  if (/content_type=video/i.test(thumbUrl)) return 'video';
+  if (/content_type=audio/i.test(thumbUrl)) return 'audio';
+  if (/content_type=image/i.test(thumbUrl)) return 'image';
+  const ext = (name || '').split('.').pop()?.toLowerCase() || '';
+  if (['mp4','mov','avi','webm','mkv','flv','wmv','m4v','3gp'].includes(ext)) return 'video';
+  if (['mp3','wav','ogg','m4a','flac','aac','wma'].includes(ext)) return 'audio';
+  if (['png','jpg','jpeg','gif','webp','svg','bmp','ico','heic'].includes(ext)) return 'image';
+  return 'file';
+}
+
+function findChipDownloadUrl(chip, thumbUrl) {
+  let url = '';
+  const parentItem = chip.closest(SEL.chipParentItem);
+  if (parentItem) {
+    const anchor = parentItem.querySelector(SEL.chipDownloadAnchor);
+    if (anchor) url = decodeHtmlEntities(anchor.getAttribute(SEL.attrs.href) || '');
+  }
+  if (!url) {
+    const wrapper = chip.closest(SEL.chipWrapperFallback) || chip.parentElement;
+    const anchor = wrapper?.querySelector(SEL.downloadAnchorGeneric);
+    if (anchor) url = decodeHtmlEntities(anchor.getAttribute(SEL.attrs.href) || '');
+  }
+  if (!url && thumbUrl && thumbUrl.includes('get_attachment_url')) {
+    url = thumbUrl
+      .replace(/url_type=[A-Z_]+/, 'url_type=DOWNLOAD_URL')
+      .replace(/[&?]sz=[^&]*/g, '')
+      .replace(/[&?]allow_caching=[^&]*/g, '');
+  }
+  return url;
+}
+
+function mimeFromExt(ext) {
+  return {
+    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+    gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml'
+  }[ext] || 'image/png';
+}
+
+function guessMimeFromName(name) {
+  return {
+    csv: 'text/csv', txt: 'text/plain', pdf: 'application/pdf',
+    doc: 'application/msword',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    xls: 'application/vnd.ms-excel',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+    mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', m4a: 'audio/mp4',
+    mp4: 'video/mp4', mov: 'video/quicktime', avi: 'video/x-msvideo',
+    webm: 'video/webm', zip: 'application/zip'
+  }[(name || '').split('.').pop()?.toLowerCase() || ''] || 'application/octet-stream';
+}
+
+function decodeHtmlEntities(str) {
+  const t = document.createElement('textarea');
+  t.innerHTML = str;
+  return t.value;
+}
+
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
+}
+
+// ── Media Download (content-side fetch with bg fallback) ────
+
+async function downloadMedia(url) {
+  // Strategy 1: fetch with credentials (works for authenticated Google content)
+  try {
+    const resp = await fetch(url, { credentials: 'include' });
+    if (resp.ok) return await blobToBase64(resp);
+  } catch { /* try next */ }
+
+  // Strategy 2: fetch without credentials
+  try {
+    const resp = await fetch(url, { credentials: 'omit' });
+    if (resp.ok) return await blobToBase64(resp);
+  } catch { /* try next */ }
+
+  // Strategy 3: ask background service worker (can use cookies API)
+  try {
+    const result = await chrome.runtime.sendMessage({ action: 'downloadMediaBg', url });
+    if (result?.success) return result;
+  } catch { /* give up */ }
+
+  return { success: false, error: 'All download strategies failed' };
+}
+
+async function blobToBase64(resp) {
+  const mimeType = resp.headers.get('content-type') || 'application/octet-stream';
+  const blob = await resp.blob();
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve({ success: true, base64: reader.result.split(',')[1], mimeType });
+    reader.onerror = () => reject(new Error('FileReader error'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+// ── Main Export Flow ─────────────────────────────────────────
+
+async function runExport({ format = 'txt', loadAll = true, includeMedia = true }) {
+  await loadSelectors();
+
+  if (!isInChatFrame()) {
+    showProgress('⚠️ Please open a Google Chat conversation first.', 0, 'error');
+    setTimeout(hideProgress, 5000);
+    return;
+  }
+
+  showProgress('⏳ Preparing export...', 2);
+
+  try {
+    let messages;
+
+    if (loadAll) {
+      messages = await scrollToLoadAll(
+        (text) => showProgress(text, 15),
+        0
+      );
+      await sleep(800);
+    }
+
+    showProgress('📝 Extracting messages...', 30);
+    await sleep(100);
+
+    if (!messages) messages = extractMessages();
+    const conversationName = getConversationName() || 'Google Chat';
+
+    if (!messages || messages.length === 0) {
+      showProgress('❌ No messages found. Try opening a conversation first.', 0, 'error');
+      setTimeout(hideProgress, 5000);
+      return;
+    }
+
+    showProgress(`Found ${messages.length} messages`, 35);
+
+    const exportDate = new Date().toISOString();
+    let mediaFiles = [];
+
+    if (format === 'html' && includeMedia) {
+      // Download all media
+      let totalMedia = 0;
+      messages.forEach(m => { totalMedia += (m.media || []).filter(x => x.url).length; });
+      const maxMedia = Math.max(totalMedia, 1);
+      let downloaded = 0;
+
+      for (const msg of messages) {
+        if (!msg.media || !msg.media.length) continue;
+        for (const m of msg.media) {
+          if (!m.url) continue;
+          downloaded++;
+          const pct = 35 + Math.round((downloaded / maxMedia) * 50);
+          showProgress(`Downloading media ${downloaded}/${totalMedia}...`, pct);
+
+          const result = await downloadMedia(m.url);
+          if (!result?.success && m.fallbackUrl) {
+            const fb = await downloadMedia(m.fallbackUrl);
+            if (fb?.success) {
+              const safeName = (m.name || `media_${downloaded}`).replace(/[^a-zA-Z0-9._-]/g, '_').substring(0, 80);
+              const path = `media/${downloaded}_${safeName}`;
+              mediaFiles.push({ path, base64: fb.base64, mimeType: fb.mimeType });
+              m._localPath = path;
+            }
+          } else if (result?.success) {
+            const safeName = (m.name || `media_${downloaded}`).replace(/[^a-zA-Z0-9._-]/g, '_').substring(0, 80);
+            const path = `media/${downloaded}_${safeName}`;
+            mediaFiles.push({ path, base64: result.base64, mimeType: result.mimeType });
+            m._localPath = path;
+          }
+        }
+      }
+    }
+
+    showProgress('📦 Packaging...', 88);
+    await sleep(200);
+
+    // Send to background for packaging & download
+    chrome.runtime.sendMessage({
+      action: 'packageAndDownload',
+      format,
+      payload: { conversationName, messages, mediaFiles, exportDate }
+    }, (resp) => {
+      if (resp && resp.success) {
+        showProgress(`✅ Exported! Saved as ${resp.filename}`, 100, 'done');
+        setTimeout(hideProgress, 4000);
+      } else {
+        showProgress('❌ Export failed: ' + (resp?.error || 'Unknown error'), 0, 'error');
+        setTimeout(hideProgress, 6000);
+      }
+    });
+
+  } catch (err) {
+    console.error('[GCE] Export error:', err);
+    showProgress('❌ Export failed: ' + err.message, 0, 'error');
+    setTimeout(hideProgress, 6000);
+  }
+}
+
+// ── Message Listener ─────────────────────────────────────────
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.action === 'ping') {
+    sendResponse({ alive: true, inChatFrame: isInChatFrame() });
+    return false;
+  }
+
+  if (msg.action === 'startExport') {
+    runExport({
+      format: msg.format || 'txt',
+      loadAll: msg.loadAll !== false,
+      includeMedia: msg.includeMedia !== false
+    });
+    sendResponse({ received: true });
+    return false;
+  }
+
+  if (msg.action === 'getConversationName') {
+    loadSelectors().then(() => {
+      sendResponse({ name: getConversationName() });
+    });
+    return true;
+  }
+
+  return false;
 });
+
+// ── Custom Event Listener (PWA fallback trigger) ─────────────
+// background.js injects a dispatchEvent when message passing fails in PWA windows
+
+window.addEventListener('gce:startExport', async (e) => {
+  const detail = e.detail || {};
+  await loadSelectors();
+  runExport({
+    format: detail.format || 'txt',
+    loadAll: detail.loadAll !== false,
+    includeMedia: detail.includeMedia !== false
+  });
+});
+
+// ── Init ─────────────────────────────────────────────────────
+
+(async () => {
+  await loadSelectors();
+  if (isInChatFrame()) {
+    console.log('[Google Chat Exporter] Content script active in chat frame');
+  }
+})();
