@@ -1,5 +1,5 @@
 // ============================================================
-// Google Chat Exporter v2.0 — popup.js
+// Google Chat Exporter v2.1 — popup.js
 // ============================================================
 
 'use strict';
@@ -15,6 +15,9 @@ async function loadSettings() {
     if (s.format) $('format-select').value = s.format;
     if (typeof s.loadAll !== 'undefined') $('load-all').checked = s.loadAll;
     if (typeof s.includeMedia !== 'undefined') $('include-media').checked = s.includeMedia;
+    if (s.dateFrom) $('date-from').value = s.dateFrom;
+    $('incremental').checked = s.incremental === true;
+    updateIncrementalControls();
     updateMediaRowVisibility();
   } catch { /* storage not accessible */ }
 }
@@ -23,7 +26,9 @@ function saveSettings() {
   const settings = {
     format: $('format-select').value,
     loadAll: $('load-all').checked,
-    includeMedia: $('include-media').checked
+    includeMedia: $('include-media').checked,
+    dateFrom: $('date-from').value,
+    incremental: $('incremental').checked
   };
   chrome.storage.local.set({ gceSettings: settings }).catch(() => {});
 }
@@ -32,6 +37,12 @@ function updateMediaRowVisibility() {
   const isHtml = $('format-select').value === 'html';
   $('media-row').style.opacity = isHtml ? '1' : '0.45';
   $('include-media').disabled = !isHtml;
+}
+
+function updateIncrementalControls() {
+  const enabled = $('incremental').checked;
+  $('load-all').disabled = enabled;
+  $('date-from').disabled = enabled;
 }
 
 // ── Conversation Status Bar ──────────────────────────────────
@@ -105,25 +116,15 @@ async function triggerExport() {
     const format = $('format-select').value;
     const loadAll = $('load-all').checked;
     const includeMedia = $('include-media').checked;
+    const dateFrom = $('date-from').value;
 
-    chrome.runtime.sendMessage({
+    const response = await chrome.runtime.sendMessage({
       action: 'popupExport',
       format,
-      tabId: tab.id
+      tabId: tab.id,
+      settings: { loadAll, includeMedia, dateFrom, incremental: $('incremental').checked }
     });
-
-    // Also try direct message to content script (more reliable)
-    chrome.tabs.sendMessage(tab.id, {
-      action: 'startExport',
-      format,
-      loadAll,
-      includeMedia
-    }, (resp) => {
-      if (chrome.runtime.lastError) {
-        // Content script not alive — background will re-inject
-        console.warn('[GCE Popup] Content script not responding, background will handle.');
-      }
-    });
+    if (!response?.success) throw new Error(response?.error || 'Could not start export');
 
   } catch (err) {
     showStatus('❌ ' + err.message, 0, 'error');
@@ -194,4 +195,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   $('load-all').addEventListener('change', saveSettings);
   $('include-media').addEventListener('change', saveSettings);
+  $('date-from').addEventListener('change', saveSettings);
+  $('incremental').addEventListener('change', () => { updateIncrementalControls(); saveSettings(); });
 });

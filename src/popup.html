@@ -3,9 +3,6 @@
 <head>
   <meta charset="UTF-8">
   <title>Google Chat Exporter</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
       --blue: #1a73e8;
@@ -191,6 +188,19 @@
       font-family: inherit;
     }
     .format-select:focus { border-color: var(--blue); }
+    .date-input {
+      width: 125px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface);
+      padding: 5px 8px;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text);
+      outline: none;
+      font-family: inherit;
+    }
+    .date-input:focus { border-color: var(--blue); }
 
     /* ── Export Button ── */
     .export-btn {
@@ -322,7 +332,7 @@
         <h1>Google Chat Exporter</h1>
         <p>Export your conversations locally &amp; privately</p>
       </div>
-      <span class="version-badge">v2.0</span>
+      <span class="version-badge">v2.1.4</span>
     </div>
   </div>
 
@@ -357,6 +367,27 @@
         </div>
         <label class="toggle">
           <input type="checkbox" id="load-all" checked>
+          <div class="toggle-track"></div>
+          <div class="toggle-thumb"></div>
+        </label>
+      </div>
+
+      <div class="option-row">
+        <span class="option-icon">📅</span>
+        <div class="option-label">
+          Messages Since
+          <div class="option-sub">Blank means full history</div>
+        </div>
+        <input class="date-input" type="date" id="date-from" aria-label="Export messages since">
+      </div>
+
+      <div class="option-row">
+        <div class="option-label">
+          New Since Last Export
+          <div class="option-sub">First run establishes a baseline. Saves a new file.</div>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="incremental">
           <div class="toggle-track"></div>
           <div class="toggle-thumb"></div>
         </label>

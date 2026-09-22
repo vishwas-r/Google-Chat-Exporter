@@ -4,6 +4,59 @@
 // ============================================================
 
 importScripts('lib/jszip.min.js');
+const mediaRequests = new Map();
+// Persist pending download/checkpoint associations so worker suspension is safe.
+let checkpointQueue = Promise.resolve();
+function serializeCheckpoint(work) {
+  const next = checkpointQueue.then(work);
+  checkpointQueue = next.catch(() => {});
+  return next;
+}
+
+async function reconcileCheckpoint(downloadId) {
+  const pendingKey = `gcePending:${downloadId}`;
+  const pending = (await chrome.storage.local.get(pendingKey))[pendingKey];
+  if (!pending) return;
+  const [download] = await chrome.downloads.search({ id: downloadId });
+  if (download?.state === 'in_progress') return;
+  if (download?.state === 'complete') {
+    const old = (await chrome.storage.local.get(pending.key))[pending.key];
+    if (!old || pending.value.timestamp > old.timestamp) {
+      await chrome.storage.local.set({ [pending.key]: pending.value });
+    } else if (pending.value.timestamp === old.timestamp) {
+      const fingerprints = [...new Set([...old.fingerprints, ...pending.value.fingerprints])];
+      await chrome.storage.local.set({ [pending.key]: { ...old, fingerprints } });
+    }
+  }
+  await chrome.storage.local.remove(pendingKey);
+}
+
+function queueCheckpoint(downloadId, checkpoint) {
+  if (!/^gceCheckpoint:[a-f0-9]{64}$/.test(checkpoint.key) ||
+      !Number.isFinite(checkpoint.value?.timestamp) || checkpoint.value.timestamp <= 0 ||
+      !Array.isArray(checkpoint.value.fingerprints) ||
+      !checkpoint.value.fingerprints.every(id => /^[a-f0-9]{64}$/.test(id))) {
+    throw new Error('Invalid checkpoint');
+  }
+  return serializeCheckpoint(async () => {
+    await chrome.storage.local.set({ [`gcePending:${downloadId}`]: checkpoint });
+    await reconcileCheckpoint(downloadId);
+  });
+}
+
+chrome.downloads.onChanged.addListener(delta => {
+  if (delta.state) serializeCheckpoint(() => reconcileCheckpoint(delta.id)).catch(console.error);
+});
+
+// Reconcile any downloads that completed while this worker was inactive.
+chrome.storage.local.get(null).then(data => {
+  for (const key of Object.keys(data)) {
+    if (/^gcePending:\d+$/.test(key)) serializeCheckpoint(() => reconcileCheckpoint(Number(key.split(':')[1]))).catch(console.error);
+  }
+}).catch(console.error);
+function mediaRequestKey(sender, id) {
+  return `${sender.tab?.id}:${sender.frameId}:${id}`;
+}
 
 // ── Context Menu Setup ──────────────────────────────────────
 
@@ -50,10 +103,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // Triggered from popup button
     (async () => {
       try {
-        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-        const tab = tabs[0];
+        const tab = msg.tabId ? await chrome.tabs.get(msg.tabId) : (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
         if (!tab) { sendResponse({ success: false, error: 'No active tab found.' }); return; }
-        await triggerExport(tab, msg.format || 'txt');
+        await triggerExport(tab, msg.format || 'txt', msg.settings);
         sendResponse({ success: true });
       } catch (err) {
         sendResponse({ success: false, error: err.message });
@@ -66,10 +118,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // Content script sends extracted data here for packaging
     (async () => {
       try {
+        if (msg.payload.sourceUrl && sender.tab?.id) {
+          const tab = await chrome.tabs.get(sender.tab.id);
+          if (tab.url !== msg.payload.sourceUrl) throw new Error('Conversation changed during export. Please retry.');
+        }
         const result = msg.format === 'html'
           ? await packageHtml(msg.payload)
           : await packageTxt(msg.payload);
-        sendResponse({ success: true, ...result });
+        let checkpointWarning = '';
+        if (msg.payload.checkpoint) {
+          try { await queueCheckpoint(result.downloadId, msg.payload.checkpoint); }
+          catch { checkpointWarning = 'Export downloaded, but its checkpoint could not be saved. Next export may repeat messages.'; }
+        }
+        sendResponse({ success: true, ...result, checkpointWarning });
       } catch (err) {
         console.error('[GCE BG] Package error:', err);
         sendResponse({ success: false, error: err.message });
@@ -78,14 +139,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  if (msg.action === 'cancelMediaBg') {
+    mediaRequests.get(mediaRequestKey(sender, msg.requestId))?.abort();
+    sendResponse({ success: true });
+    return false;
+  }
+
   if (msg.action === 'downloadMediaBg') {
     // Content script asks background to fetch media (bypasses CORS)
     (async () => {
+      const key = mediaRequestKey(sender, msg.requestId);
+      const controller = new AbortController();
+      mediaRequests.set(key, controller);
       try {
-        const result = await fetchMediaAsBase64(msg.url);
+        const result = await fetchMediaAsBase64(msg.url, controller.signal);
         sendResponse(result);
       } catch (err) {
         sendResponse({ success: false, error: err.message });
+      } finally {
+        mediaRequests.delete(key);
       }
     })();
     return true;
@@ -104,7 +176,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
  * Trigger export on a tab with PWA/app window support.
  * Uses multi-strategy injection to handle normal tabs AND PWA windows.
  */
-async function triggerExport(contextMenuTab, format) {
+async function triggerExport(contextMenuTab, format, overrides = {}) {
   // Find the best target tab (handles PWA windows)
   const targetTabId = await resolveTargetTab(contextMenuTab);
   if (!targetTabId) {
@@ -120,12 +192,16 @@ async function triggerExport(contextMenuTab, format) {
   }
 
   // Send export command
-  const settings = await getSettings();
+  const settings = { ...await getSettings(), ...overrides };
+  settings.sourceUrl = (await chrome.tabs.get(targetTabId)).url;
   chrome.tabs.sendMessage(targetTabId, {
     action: 'startExport',
     format,
     loadAll: settings.loadAll !== false,  // default true
-    includeMedia: settings.includeMedia !== false  // default true for html
+    includeMedia: settings.includeMedia !== false,  // default true for html
+    dateFrom: settings.dateFrom || '',
+    incremental: settings.incremental === true,
+    sourceUrl: settings.sourceUrl
   }, (resp) => {
     if (chrome.runtime.lastError) {
       // Final fallback: direct script injection — bypasses message channel entirely
@@ -223,7 +299,7 @@ async function getSettings() {
 
 // ── TXT Packaging ───────────────────────────────────────────
 
-async function packageTxt({ conversationName, messages, exportDate }) {
+async function packageTxt({ conversationName, messages, exportDate, history }) {
   const name = conversationName || 'Google Chat';
   const line = '─'.repeat(60);
   const header = [
@@ -234,6 +310,8 @@ async function packageTxt({ conversationName, messages, exportDate }) {
     `Chat:      ${name}`,
     `Messages:  ${messages.length}`,
     `Exported:  ${new Date(exportDate).toLocaleString()}`,
+    `History:   ${history?.reason || 'unspecified'}${history?.warning ? ' — ' + history.warning : ''}`,
+    ...(history?.since ? [`New since: ${new Date(history.since).toISOString()}`] : []),
     '',
     line,
     ''
@@ -272,17 +350,17 @@ async function packageTxt({ conversationName, messages, exportDate }) {
   const filename = `${sanitize(name)}_${dateStr()}.txt`;
   const dataUrl = 'data:text/plain;charset=utf-8;base64,' + b64EncodeUtf8(fullText);
 
-  await triggerDownload(dataUrl, filename);
-  return { filename };
+  const downloadId = await triggerDownload(dataUrl, filename);
+  return { filename, downloadId };
 }
 
 // ── HTML + ZIP Packaging ────────────────────────────────────
 
-async function packageHtml({ conversationName, messages, mediaFiles, exportDate }) {
+async function packageHtml({ conversationName, messages, mediaFiles, exportDate, history }) {
   const name = conversationName || 'Google Chat';
   const zip = new JSZip();
 
-  const htmlContent = generateHtml({ conversationName: name, messages, exportDate });
+  const htmlContent = generateHtml({ conversationName: name, messages, exportDate, history });
   const cssContent = generateCss();
 
   zip.file('index.html', htmlContent);
@@ -298,13 +376,13 @@ async function packageHtml({ conversationName, messages, mediaFiles, exportDate 
   const filename = `${sanitize(name)}_${dateStr()}.zip`;
   const dataUrl = 'data:application/zip;base64,' + zipBase64;
 
-  await triggerDownload(dataUrl, filename);
-  return { filename };
+  const downloadId = await triggerDownload(dataUrl, filename);
+  return { filename, downloadId };
 }
 
 // ── HTML Generator ──────────────────────────────────────────
 
-function generateHtml({ conversationName, messages, exportDate }) {
+function generateHtml({ conversationName, messages, exportDate, history }) {
   let messagesHtml = '';
   let lastDate = '';
   let lastSender = '';
@@ -323,8 +401,9 @@ function generateHtml({ conversationName, messages, exportDate }) {
 
     let avatarHtml = '';
     if (showHeader) {
-      if (msg.avatarUrl) {
-        avatarHtml = `<img class="avatar" src="${esc(msg.avatarUrl)}" alt="${esc(msg.sender)}" loading="lazy">`;
+      const avatarUrl = safeResourceUrl(msg.avatarUrl);
+      if (avatarUrl) {
+        avatarHtml = `<img class="avatar" src="${esc(avatarUrl)}" alt="${esc(msg.sender)}" loading="lazy">`;
       } else {
         const initial = (msg.sender || '?').charAt(0).toUpperCase();
         avatarHtml = `<div class="avatar avatar-initial">${esc(initial)}</div>`;
@@ -368,6 +447,8 @@ function generateHtml({ conversationName, messages, exportDate }) {
     <div class="header-icon">${getBrandLogoSvg(38)}</div>
     <div class="header-info">
       <h1>${esc(conversationName)}</h1>
+      ${history?.since ? `<p>New since ${esc(new Date(history.since).toISOString())}</p>` : ''}
+      ${history?.warning ? `<p>${esc(history.warning)}</p>` : ''}
       <p>${messages.length} messages &middot; Exported ${new Date(exportDate).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}</p>
     </div>
   </header>
@@ -378,16 +459,20 @@ function generateHtml({ conversationName, messages, exportDate }) {
 }
 
 function renderMediaHtml(m) {
-  const localPath = m._localPath ? esc(m._localPath) : '';
-  const url = esc(m.url || '');
-  const src = localPath || url;
+  const localPath = safeResourceUrl(m._localPath);
+  const url = safeResourceUrl(m.url);
+  const src = esc(localPath || url);
   const name = esc(m.name || 'file');
+
+  if (!src) {
+    return `<div class="media-item media-file"><span class="file-chip"><span class="file-icon">${fileTypeIcon(m.name)}</span><span class="file-name">${name} [unavailable]</span></span></div>`;
+  }
 
   switch (m.type) {
     case 'image':
     case 'gif':
       return `<div class="media-item media-image">
-  <a href="${src}" target="_blank"><img src="${src}" alt="${name}" loading="lazy"></a>
+  <a href="${src}" target="_blank" rel="noopener noreferrer"><img src="${src}" alt="${name}" loading="lazy"></a>
 </div>`;
 
     case 'audio': {
@@ -518,14 +603,15 @@ audio{width:100%;height:34px;border-radius:17px;margin-top:4px}
 
 // ── Media Fetch (background-side, bypasses CORS) ────────────
 
-async function fetchMediaAsBase64(url) {
+async function fetchMediaAsBase64(url, signal) {
   const strategies = [
-    () => fetch(url, { credentials: 'include' }),
-    () => fetch(url, { credentials: 'omit' }),
-    () => fetch(url, { redirect: 'follow', credentials: 'include' })
+    () => fetch(url, { credentials: 'include', signal }),
+    () => fetch(url, { credentials: 'omit', signal }),
+    () => fetch(url, { redirect: 'follow', credentials: 'include', signal })
   ];
 
   for (const strategy of strategies) {
+    signal?.throwIfAborted();
     try {
       const resp = await strategy();
       if (resp.ok) {
@@ -535,6 +621,7 @@ async function fetchMediaAsBase64(url) {
         return { success: true, base64: arrayBufToBase64(buf), mimeType };
       }
     } catch {
+      signal?.throwIfAborted();
       // try next strategy
     }
   }
@@ -568,10 +655,27 @@ function esc(s) {
   return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+function safeResourceUrl(value) {
+  const candidate = String(value || '').trim();
+  if (!candidate) return '';
+
+  if (/^media\/[a-zA-Z0-9._/-]+$/.test(candidate) &&
+      !candidate.split('/').includes('..')) {
+    return candidate;
+  }
+
+  try {
+    const parsed = new URL(candidate);
+    return parsed.protocol === 'https:' ? parsed.href : '';
+  } catch {
+    return '';
+  }
+}
+
 function formatTextContent(text) {
   let t = esc(text);
   t = t.replace(/\n/g, '<br>');
-  t = t.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank">$1</a>');
+  t = t.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
   return t;
 }
 

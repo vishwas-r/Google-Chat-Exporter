@@ -1,5 +1,5 @@
 // ============================================================
-// Google Chat Exporter v2.0 — content.js
+// Google Chat Exporter v2.1 — content.js
 // Runs in Google Chat tabs (normal, Gmail-embedded, PWA/app window)
 // 100% private: all extraction is local, zero external requests
 // ============================================================
@@ -78,6 +78,8 @@ function isInChatFrame() {
 // ── Progress Overlay ────────────────────────────────────────
 
 let progressEl = null;
+let exportInProgress = false;
+let exportController = null;
 
 function showProgress(text, percent, state = 'working') {
   if (!progressEl) {
@@ -190,7 +192,14 @@ function showProgress(text, percent, state = 'working') {
       </div>`;
 
     document.documentElement.appendChild(progressEl);
-    progressEl.querySelector('.gce-close').addEventListener('click', hideProgress);
+    progressEl.querySelector('.gce-close').addEventListener('click', () => {
+      if (exportInProgress && exportController) {
+        showProgress('Cancelling export...', 0);
+        exportController.abort();
+      } else {
+        hideProgress();
+      }
+    });
   }
 
   const label = progressEl.querySelector('.gce-label');
@@ -240,80 +249,186 @@ function findScrollContainer() {
   return best;
 }
 
-async function scrollToLoadAll(onProgress, dateFromTs = 0) {
+async function scrollToLoadAll(onProgress, dateFromTs = 0, signal = null) {
   const container = findScrollContainer();
   if (!container) {
     onProgress && onProgress('No scroll container found — exporting visible messages only');
-    return null;
+    return { messages: extractMessages(), reason: 'visible-only', warning: 'No history container found; only rendered messages were captured.' };
   }
+
+  const distanceFromBottom = Math.max(
+    0,
+    container.scrollHeight - container.clientHeight - container.scrollTop
+  );
+  const anchor = captureScrollAnchor(container);
+  const extractionCache = createExtractionCache(container);
+  let reason = 'limit';
 
   const dedupMap = new Map();
   const collectCurrent = () => {
-    for (const msg of extractMessages()) {
+    for (const msg of extractMessages(extractionCache)) {
       const key = msg._dedupKey || `${msg.sender}|${msg.absoluteTimestamp}|${(msg.text || '').slice(0, 80)}`;
-      if (!dedupMap.has(key)) dedupMap.set(key, msg);
+      dedupMap.set(key, msg);
     }
   };
 
-  collectCurrent();
-  let prevHeight = container.scrollHeight;
-  let noChangeCount = 0;
-  let iterations = 0;
-  const MAX_ITER = 600;
+  try {
+    collectCurrent();
+    let prevHeight = container.scrollHeight;
+    let prevOldest = getOldestTimestamp();
+    let stableBatches = 0;
+    let batches = 0;
+    const MAX_BATCHES = 3000;
+    const STABLE_BATCH_LIMIT = 3;
 
-  onProgress && onProgress('Scrolling up to load full history...');
+    onProgress && onProgress('Scrolling up to load full history...');
 
-  while (iterations < MAX_ITER) {
-    iterations++;
+    while (batches < MAX_BATCHES) {
+      throwIfAborted(signal);
+      batches++;
 
-    // Stop early if we've passed our date range
-    if (dateFromTs && iterations % 3 === 0) {
+      // Stop early if we've passed our date range
+      if (dateFromTs) {
+        const oldest = getOldestTimestamp();
+        if (oldest && oldest < dateFromTs) {
+          onProgress && onProgress('Reached date range boundary — stopping scroll.');
+          reason = 'date-boundary';
+          break;
+        }
+      }
+
+      // Overlap viewports so virtualized messages are collected before eviction.
+      const beforeCount = dedupMap.size;
+      const previousTop = container.scrollTop;
+      const targetTop = Math.max(0, previousTop - Math.max(1, container.clientHeight * 0.75));
+      const wait = waitForHistoryMutation(container, prevHeight, prevOldest,
+        targetTop > 1 ? 250 : 600 * (stableBatches + 1), signal, targetTop > 1);
+      container.scrollTop = targetTop;
+      await wait;
+      collectCurrent();
+
       const oldest = getOldestTimestamp();
-      if (oldest && oldest < dateFromTs) {
-        onProgress && onProgress('Reached date range boundary — stopping scroll.');
-        break;
-      }
-    }
+      const curHeight = container.scrollHeight;
+      const advanced = dedupMap.size > beforeCount || curHeight !== prevHeight || (oldest && oldest !== prevOldest);
 
-    container.scrollTop = Math.max(0, container.scrollTop - 600);
-    await sleep(500);
-
-    if (iterations % 3 === 0) collectCurrent();
-
-    const curHeight = container.scrollHeight;
-
-    if (container.scrollTop === 0) {
-      if (curHeight === prevHeight) {
-        noChangeCount++;
-        if (noChangeCount >= 4) break;
-        // Nudge to trigger lazy load
-        container.scrollTop = 150;
-        await sleep(300);
-      } else {
-        noChangeCount = 0;
+      if (advanced) {
+        stableBatches = 0;
         prevHeight = curHeight;
+        prevOldest = oldest;
+      } else if (container.scrollTop <= 1 && previousTop <= 1) {
+        stableBatches++;
+        if (stableBatches >= STABLE_BATCH_LIMIT) { reason = 'idle'; break; }
+      }
+
+      if (batches % 2 === 0) {
+        onProgress && onProgress(`Loading history... ${dedupMap.size} messages collected`);
       }
     }
 
-    if (iterations % 5 === 0) {
-      onProgress && onProgress(`Loading history... ${dedupMap.size} messages collected`);
-    }
+    collectCurrent();
+    await sleep(150, signal);
+    const warning = reason === 'date-boundary' ? '' : reason === 'limit'
+      ? 'History scan reached its safety limit; export may be incomplete.'
+      : 'No further history appeared; completeness could not be verified.';
+    onProgress && onProgress(`${dedupMap.size} messages collected. ${warning}`);
+
+    return { reason, warning, messages: [...dedupMap.values()].sort(
+      (a, b) => (a.absoluteTimestamp || 0) - (b.absoluteTimestamp || 0)
+    ) };
+  } finally {
+    extractionCache.disconnect();
+    restoreScrollPosition(container, distanceFromBottom, anchor);
   }
+}
 
-  collectCurrent();
-  await sleep(300);
-  onProgress && onProgress(`Scroll complete. ${dedupMap.size} messages collected.`);
+function captureScrollAnchor(container) {
+  const top = container.getBoundingClientRect().top;
+  const node = [...container.querySelectorAll(SEL.messageGroups)].find(el => el.getBoundingClientRect().bottom > top);
+  const id = node?.getAttribute(SEL.attrs.groupId);
+  return id ? { id, offset: node.getBoundingClientRect().top - top } : null;
+}
 
-  const sorted = [...dedupMap.values()].sort(
-    (a, b) => (a.absoluteTimestamp || 0) - (b.absoluteTimestamp || 0)
+function restoreScrollPosition(container, distanceFromBottom, anchor = null) {
+  const findAnchor = () => anchor && [...container.querySelectorAll(SEL.messageGroups)]
+    .find(el => el.getAttribute(SEL.attrs.groupId) === anchor.id);
+  const align = node => { container.scrollTop += node.getBoundingClientRect().top - container.getBoundingClientRect().top - anchor.offset; };
+  const node = findAnchor();
+  if (node) { align(node); return; }
+  container.scrollTop = Math.max(
+    0,
+    container.scrollHeight - container.clientHeight - distanceFromBottom
   );
-  return sorted;
+  // Allow a virtualized list to render the anchor after the fallback jump.
+  if (anchor) {
+    const observer = new MutationObserver(() => {
+      const restored = findAnchor();
+      if (restored) { observer.disconnect(); clearTimeout(timer); align(restored); }
+    });
+    observer.observe(container, { childList: true, subtree: true });
+    const timer = setTimeout(() => observer.disconnect(), 1000);
+  }
+}
+
+function waitForHistoryMutation(container, initialHeight, initialOldest, timeoutMs, signal = null, renderedStep = false) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let settleTimer = 0;
+    let timeoutTimer = 0;
+    let frame = null;
+
+    const cleanup = () => {
+      observer.disconnect();
+      clearTimeout(settleTimer);
+      clearTimeout(timeoutTimer);
+      signal?.removeEventListener('abort', cancel);
+      if (frame !== null) cancelAnimationFrame(frame);
+    };
+
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(container.scrollHeight !== initialHeight || getOldestTimestamp() !== initialOldest);
+    };
+
+    const cancel = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(createAbortError());
+    };
+
+    const observer = new MutationObserver(() => {
+      const historyAdvanced = container.scrollHeight !== initialHeight ||
+        getOldestTimestamp() !== initialOldest;
+      if (!historyAdvanced) return;
+      clearTimeout(settleTimer);
+      settleTimer = setTimeout(finish, 120);
+    });
+    observer.observe(container, { childList: true, subtree: true });
+    timeoutTimer = setTimeout(finish, timeoutMs);
+    // Two paints let scroll handlers render an already-loaded viewport.
+    // Hidden tabs retain the timer fallback. History-boundary waits stay long.
+    if (renderedStep && typeof requestAnimationFrame === 'function') {
+      frame = requestAnimationFrame(() => {
+        frame = requestAnimationFrame(() => {
+          frame = null;
+          if (!settleTimer) finish();
+        });
+      });
+    }
+    if (signal?.aborted) cancel();
+    else signal?.addEventListener('abort', cancel, { once: true });
+  });
 }
 
 function getOldestTimestamp() {
-  const el = document.querySelector(SEL.messageGroups);
-  const ts = el && el.querySelector(SEL.absoluteTimestampAttr);
-  return ts ? parseInt(ts.getAttribute(SEL.attrs.absoluteTimestamp), 10) || 0 : 0;
+  let oldest = 0;
+  document.querySelectorAll(SEL.absoluteTimestampAttr).forEach(ts => {
+    const value = parseInt(ts.getAttribute(SEL.attrs.absoluteTimestamp), 10) || 0;
+    if (value && (!oldest || value < oldest)) oldest = value;
+  });
+  return oldest;
 }
 
 // ── Message Extraction ──────────────────────────────────────
@@ -330,7 +445,33 @@ function getConversationName() {
   return '';
 }
 
-function extractMessages() {
+function createExtractionCache(container) {
+  let entries = new WeakMap();
+  const invalidate = records => {
+    for (const record of records) {
+      const element = record.target.nodeType === 1 ? record.target : record.target.parentElement;
+      const group = element?.closest(SEL.messageGroups);
+      if (group) entries.delete(group);
+      // List insertions do not change existing groups. Their date association
+      // is checked by read(); recycled groups invalidate through their own edits.
+    }
+  };
+  const observer = new MutationObserver(invalidate);
+  observer.observe(container, { subtree: true, childList: true, characterData: true, attributes: true });
+  return {
+    read(group, date, parse) {
+      invalidate(observer.takeRecords());
+      const cached = entries.get(group);
+      if (cached?.date === date) return cached.messages;
+      const messages = parse();
+      entries.set(group, { date, messages });
+      return messages;
+    },
+    disconnect() { observer.disconnect(); entries = new WeakMap(); }
+  };
+}
+
+function extractMessages(cache = null) {
   const results = [];
   const seen = new Set();
 
@@ -343,7 +484,9 @@ function extractMessages() {
 
   const groups = document.querySelectorAll(SEL.messageGroups);
   for (const group of groups) {
-    const msgs = extractFromGroup(group, dateSeps);
+    const top = group.getBoundingClientRect().top;
+    const date = [...dateSeps].reverse().find(sep => sep.top <= top)?.text || dateSeps[0]?.text || '';
+    const msgs = cache ? cache.read(group, date, () => extractFromGroup(group, dateSeps)) : extractFromGroup(group, dateSeps);
     for (let i = 0; i < msgs.length; i++) {
       const msg = msgs[i];
       const hasMedia = msg.media && msg.media.length > 0;
@@ -688,78 +831,289 @@ function decodeHtmlEntities(str) {
   return t.value;
 }
 
-function sleep(ms) {
-  return new Promise(r => setTimeout(r, ms));
+function createAbortError() {
+  const error = new Error('Export cancelled');
+  error.name = 'AbortError';
+  return error;
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw createAbortError();
+}
+
+function sleep(ms, signal = null) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(createAbortError());
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', cancel);
+      resolve();
+    }, ms);
+    const cancel = () => {
+      clearTimeout(timer);
+      reject(createAbortError());
+    };
+    signal?.addEventListener('abort', cancel, { once: true });
+  });
 }
 
 // ── Media Download (content-side fetch with bg fallback) ────
 
-async function downloadMedia(url) {
+async function downloadMedia(url, signal = null) {
+  throwIfAborted(signal);
   // Strategy 1: fetch with credentials (works for authenticated Google content)
   try {
-    const resp = await fetch(url, { credentials: 'include' });
-    if (resp.ok) return await blobToBase64(resp);
-  } catch { /* try next */ }
+    const resp = await fetch(url, { credentials: 'include', signal });
+    if (resp.ok) return await blobToBase64(resp, signal);
+  } catch { throwIfAborted(signal); }
 
   // Strategy 2: fetch without credentials
   try {
-    const resp = await fetch(url, { credentials: 'omit' });
-    if (resp.ok) return await blobToBase64(resp);
-  } catch { /* try next */ }
+    const resp = await fetch(url, { credentials: 'omit', signal });
+    if (resp.ok) return await blobToBase64(resp, signal);
+  } catch { throwIfAborted(signal); }
 
   // Strategy 3: ask background service worker (can use cookies API)
+  const requestId = crypto.randomUUID();
+  const cancel = () => { chrome.runtime.sendMessage({ action: 'cancelMediaBg', requestId }).catch(() => {}); };
   try {
-    const result = await chrome.runtime.sendMessage({ action: 'downloadMediaBg', url });
+    throwIfAborted(signal);
+    const pending = chrome.runtime.sendMessage({ action: 'downloadMediaBg', url, requestId });
+    signal?.addEventListener('abort', cancel, { once: true });
+    const result = await pending;
+    throwIfAborted(signal);
     if (result?.success) return result;
-  } catch { /* give up */ }
+  } catch { throwIfAborted(signal); }
+  finally { signal?.removeEventListener('abort', cancel); }
 
   return { success: false, error: 'All download strategies failed' };
 }
 
-async function blobToBase64(resp) {
+async function blobToBase64(resp, signal = null) {
   const mimeType = resp.headers.get('content-type') || 'application/octet-stream';
   const blob = await resp.blob();
+  throwIfAborted(signal);
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onloadend = () => resolve({ success: true, base64: reader.result.split(',')[1], mimeType });
-    reader.onerror = () => reject(new Error('FileReader error'));
+    const cleanup = () => signal?.removeEventListener('abort', cancel);
+    const cancel = () => { reader.abort(); cleanup(); reject(createAbortError()); };
+    reader.onload = () => { cleanup(); resolve({ success: true, base64: reader.result.split(',')[1], mimeType }); };
+    reader.onerror = () => { cleanup(); reject(new Error('FileReader error')); };
+    signal?.addEventListener('abort', cancel, { once: true });
     reader.readAsDataURL(blob);
   });
 }
 
 // ── Main Export Flow ─────────────────────────────────────────
 
-async function runExport({ format = 'txt', loadAll = true, includeMedia = true }) {
-  await loadSelectors();
+function checkpointScope(href, format, includeMedia) {
+  try {
+    const url = new URL(href);
+    if (!['chat.google.com', 'mail.google.com'].includes(url.hostname)) return '';
+    const route = `${url.pathname}${url.hash}`;
+    // Chat uses both /app/space/ID and direct /u/0/room/ID routes. Installed
+    // web apps commonly expose only the latter, while Gmail uses #chat/....
+    const match = route.match(/(?:#chat\/|\/app\/|\/)(?:(dm|space|room|chat)\/)([A-Za-z0-9_-]+)/);
+    if (!match) return '';
+    const account = url.pathname.match(/\/u\/([^/]+)/)?.[1] || url.searchParams.get('authuser') || '0';
+    const mode = format === 'txt' ? 'txt' : includeMedia ? 'html-media' : 'html';
+    return `${url.hostname}|${account}|${match[1]}|${match[2]}|${mode}`;
+  } catch { return ''; }
+}
 
-  if (!isInChatFrame()) {
-    showProgress('⚠️ Please open a Google Chat conversation first.', 0, 'error');
-    setTimeout(hideProgress, 5000);
-    return;
+function checkpointScopeFromPage(format, includeMedia, sourceUrl = '') {
+  const candidates = [];
+  const documents = [];
+  const add = href => { if (href && !candidates.includes(href)) candidates.push(href); };
+  const addDocument = doc => { if (doc && !documents.includes(doc)) documents.push(doc); };
+  if (typeof location !== 'undefined') add(location.href);
+  add(sourceUrl);
+  addDocument(document);
+
+  // The conversation may live in a same-origin inner frame while an installed
+  // Chat web app keeps its outer address at /u/N/. Inspect accessible ancestors,
+  // including their documents: the active navigation link lives in the shell.
+  try {
+    let frame = window;
+    while (frame.parent && frame.parent !== frame) {
+      frame = frame.parent;
+      add(frame.location.href);
+      addDocument(frame.document);
+    }
+  } catch { /* a cross-origin ancestor is intentionally inaccessible */ }
+
+  // In some PWA layouts the address remains fixed. Chat still marks the active
+  // navigation item, whose link contains the stable conversation ID.
+  const selected = [
+    'a[aria-current="page"][href]',
+    'a[aria-selected="true"][href]',
+    '[aria-selected="true"] a[href]',
+    '[role="treeitem"][aria-current="true"] a[href]'
+  ];
+  for (const doc of documents) {
+    try {
+      doc.querySelectorAll(selected.join(',')).forEach(link => {
+        const href = link.href || link.getAttribute?.('href');
+        try { add(new URL(href, sourceUrl || location.href).href); } catch { /* ignore malformed UI links */ }
+      });
+    } catch { /* synthetic/minimal documents may not implement this query */ }
   }
 
-  showProgress('⏳ Preparing export...', 2);
+  for (const href of candidates) {
+    const scope = checkpointScope(href, format, includeMedia);
+    if (scope) return scope;
+  }
+
+  // Some Chat shells mark selection only with private CSS. Match the visible
+  // header to navigation links, but accept it only when the result is unique.
+  const title = cleanText(getConversationName()).toLocaleLowerCase();
+  if (title) {
+    const matches = new Set();
+    for (const doc of documents) {
+      try {
+        doc.querySelectorAll('a[href]').forEach(link => {
+          const label = cleanText(link.getAttribute?.('aria-label') || link.textContent).toLocaleLowerCase();
+          if (label !== title) return;
+          const href = link.href || link.getAttribute?.('href');
+          let scope = '';
+          try { scope = checkpointScope(new URL(href, sourceUrl || location.href).href, format, includeMedia); } catch { return; }
+          if (scope) matches.add(scope);
+        });
+      } catch { /* inaccessible or minimal document */ }
+    }
+    if (matches.size === 1) return [...matches][0];
+  }
+  return '';
+}
+
+async function hashCheckpointValue(value) {
+  const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return [...new Uint8Array(bytes)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function messageFingerprint(message) {
+  return hashCheckpointValue(JSON.stringify([
+    message._dedupKey || '', message.sender || '', message.absoluteTimestamp || 0,
+    message.text || '', (message.media || []).map(m => [m.type, m.name, m.url])
+  ]));
+}
+
+async function selectNewMessages(messages, checkpoint) {
+  if (!checkpoint) return messages;
+  const known = new Set(checkpoint.fingerprints);
+  const selected = [];
+  for (const message of messages) {
+    const time = message.absoluteTimestamp;
+    // Missing timestamps must never silently discard a message.
+    if (!time || time > checkpoint.timestamp ||
+        (time === checkpoint.timestamp && !known.has(await messageFingerprint(message)))) selected.push(message);
+  }
+  return selected;
+}
+
+async function buildCheckpoint(messages) {
+  const timestamp = messages.reduce((max, m) => Math.max(max, m.absoluteTimestamp || 0), 0);
+  if (!timestamp) return null;
+  const boundary = messages.filter(m => m.absoluteTimestamp === timestamp);
+  if (boundary.length > 5000) return null;
+  return { timestamp, fingerprints: await Promise.all(boundary.map(messageFingerprint)) };
+}
+
+async function contentCheckpointScope(messages, conversationName, format, includeMedia, href = '') {
+  const timestamped = messages.filter(message => message.absoluteTimestamp).sort((a, b) =>
+    a.absoluteTimestamp - b.absoluteTimestamp || String(a._dedupKey || '').localeCompare(String(b._dedupKey || ''))
+  );
+  if (!timestamped.length) return '';
+  const anchors = (await Promise.all(timestamped.slice(0, 3).map(messageFingerprint))).sort();
+  let host = 'chat.google.com';
+  let account = '0';
+  try {
+    const url = new URL(href || location.href);
+    if (['chat.google.com', 'mail.google.com'].includes(url.hostname)) host = url.hostname;
+    account = url.pathname.match(/\/u\/([^/]+)/)?.[1] || url.searchParams.get('authuser') || '0';
+  } catch { /* retain conservative defaults */ }
+  const mode = format === 'txt' ? 'txt' : includeMedia ? 'html-media' : 'html';
+  const titleHash = await hashCheckpointValue(cleanText(conversationName).toLocaleLowerCase());
+  return `${host}|${account}|content|${titleHash}|${anchors.join('.')}|${mode}`;
+}
+
+async function runExport({ format = 'txt', loadAll = true, includeMedia = true, dateFrom = '', incremental = false, sourceUrl = '' }) {
+  if (exportInProgress) return;
+  exportInProgress = true;
+  const controller = new AbortController();
+  exportController = controller;
+  const { signal } = controller;
+  let originalPosition = null;
 
   try {
+    await loadSelectors();
+
+    if (!isInChatFrame()) {
+      showProgress('⚠️ Please open a Google Chat conversation first.', 0, 'error');
+      setTimeout(hideProgress, 5000);
+      exportInProgress = false;
+      exportController = null;
+      return;
+    }
+
+    showProgress('⏳ Preparing export...', 2);
+
+    const initialUrl = typeof location !== 'undefined' ? location.href : '';
+    let scope = checkpointScopeFromPage(format, includeMedia, sourceUrl);
+    let checkpointKey = scope ? `gceCheckpoint:${await hashCheckpointValue(scope)}` : '';
+    let previous = incremental && checkpointKey ? (await chrome.storage.local.get(checkpointKey))[checkpointKey] : null;
+    if (incremental) {
+      loadAll = true;
+      dateFrom = '';
+      const container = findScrollContainer();
+      if (container) {
+        originalPosition = { container, distance: Math.max(0, container.scrollHeight - container.clientHeight - container.scrollTop), anchor: captureScrollAnchor(container) };
+        container.scrollTop = container.scrollHeight;
+        await sleep(600, signal);
+      }
+      showProgress(previous ? 'Loading messages since the previous export...' :
+        (checkpointKey ? 'First incremental export: collecting a baseline...' : 'Identifying this web-app conversation from its history...'), 5);
+    }
+
     let messages;
+    let history = { reason: 'visible-only', warning: 'Only currently rendered messages were requested.' };
+    const dateFromTs = previous?.timestamp || (dateFrom ? new Date(`${dateFrom}T00:00:00`).getTime() : 0);
 
     if (loadAll) {
-      messages = await scrollToLoadAll(
+      history = await scrollToLoadAll(
         (text) => showProgress(text, 15),
-        0
+        dateFromTs,
+        signal
       );
-      await sleep(800);
+      messages = history.messages;
+      await sleep(200, signal);
     }
 
     showProgress('📝 Extracting messages...', 30);
-    await sleep(100);
+    await sleep(100, signal);
 
     if (!messages) messages = extractMessages();
     const conversationName = getConversationName() || 'Google Chat';
+    if (incremental && !checkpointKey) {
+      scope = await contentCheckpointScope(messages, conversationName, format, includeMedia, sourceUrl || initialUrl);
+      if (!scope) throw new Error('Cannot create a safe conversation identity because the loaded messages have no timestamps.');
+      checkpointKey = `gceCheckpoint:${await hashCheckpointValue(scope)}`;
+      previous = (await chrome.storage.local.get(checkpointKey))[checkpointKey] || null;
+    }
+    const effectiveDateFromTs = previous?.timestamp || dateFromTs;
+    if (effectiveDateFromTs) {
+      messages = messages.filter(m => !m.absoluteTimestamp || m.absoluteTimestamp >= effectiveDateFromTs);
+    }
+    messages = await selectNewMessages(messages, previous);
+    if (previous) history.since = previous.timestamp;
 
     if (!messages || messages.length === 0) {
-      showProgress('❌ No messages found. Try opening a conversation first.', 0, 'error');
+      showProgress(previous ? `No new messages found since the previous export. ${history.warning || ''}` : 'No messages found. Try opening a conversation first.', 100, previous ? 'done' : 'error');
       setTimeout(hideProgress, 5000);
+      exportInProgress = false;
+      exportController = null;
       return;
     }
 
@@ -767,63 +1121,87 @@ async function runExport({ format = 'txt', loadAll = true, includeMedia = true }
 
     const exportDate = new Date().toISOString();
     let mediaFiles = [];
+    let mediaFailed = false;
 
     if (format === 'html' && includeMedia) {
       // Download all media
       let totalMedia = 0;
       messages.forEach(m => { totalMedia += (m.media || []).filter(x => x.url).length; });
       const maxMedia = Math.max(totalMedia, 1);
-      let downloaded = 0;
+      const jobs = [];
+      messages.forEach(msg => (msg.media || []).forEach(m => {
+        if (m.url) jobs.push({ m, number: jobs.length + 1 });
+      }));
+      let nextJob = 0;
+      let completed = 0;
 
-      for (const msg of messages) {
-        if (!msg.media || !msg.media.length) continue;
-        for (const m of msg.media) {
-          if (!m.url) continue;
-          downloaded++;
-          const pct = 35 + Math.round((downloaded / maxMedia) * 50);
-          showProgress(`Downloading media ${downloaded}/${totalMedia}...`, pct);
-
-          const result = await downloadMedia(m.url);
-          if (!result?.success && m.fallbackUrl) {
-            const fb = await downloadMedia(m.fallbackUrl);
-            if (fb?.success) {
-              const safeName = (m.name || `media_${downloaded}`).replace(/[^a-zA-Z0-9._-]/g, '_').substring(0, 80);
-              const path = `media/${downloaded}_${safeName}`;
-              mediaFiles.push({ path, base64: fb.base64, mimeType: fb.mimeType });
-              m._localPath = path;
-            }
-          } else if (result?.success) {
-            const safeName = (m.name || `media_${downloaded}`).replace(/[^a-zA-Z0-9._-]/g, '_').substring(0, 80);
-            const path = `media/${downloaded}_${safeName}`;
+      const worker = async () => {
+        while (nextJob < jobs.length) {
+          throwIfAborted(signal);
+          const { m, number } = jobs[nextJob++];
+          let result = await downloadMedia(m.url, signal);
+          if (!result?.success && m.fallbackUrl) result = await downloadMedia(m.fallbackUrl, signal);
+          throwIfAborted(signal);
+          if (result?.success) {
+            const safeName = (m.name || `media_${number}`).replace(/[^a-zA-Z0-9._-]/g, '_').substring(0, 80);
+            const path = `media/${number}_${safeName}`;
             mediaFiles.push({ path, base64: result.base64, mimeType: result.mimeType });
             m._localPath = path;
-          }
+          } else { mediaFailed = true; }
+          completed++;
+          const pct = 35 + Math.round((completed / maxMedia) * 50);
+          showProgress(`Downloading media ${completed}/${totalMedia}...`, pct);
         }
-      }
+      };
+
+      const concurrency = Math.min(4, jobs.length);
+      const results = await Promise.allSettled(Array.from({ length: concurrency }, async () => {
+        try { await worker(); } catch (error) { controller.abort(); throw error; }
+      }));
+      const failure = results.find(result => result.status === 'rejected');
+      if (failure) throw failure.reason;
     }
 
     showProgress('📦 Packaging...', 88);
-    await sleep(200);
+    await sleep(200, signal);
+    throwIfAborted(signal);
+    if (initialUrl && location.href !== initialUrl) throw new Error('Conversation changed during export. Please retry.');
+    const candidate = checkpointKey && loadAll && !mediaFailed && history.reason !== 'limit' && history.reason !== 'visible-only'
+      ? await buildCheckpoint(messages) : null;
+    if (mediaFailed) history.warning = `${history.warning || ''} Some attachments failed; the checkpoint will not advance.`.trim();
+    if (incremental && !candidate && !mediaFailed) history.warning = `${history.warning || ''} No safe checkpoint was saved; the next export may repeat messages.`.trim();
+    // Packaging runs in the service worker and cannot be interrupted safely.
+    exportController = null;
 
     // Send to background for packaging & download
-    chrome.runtime.sendMessage({
+    const resp = await chrome.runtime.sendMessage({
       action: 'packageAndDownload',
       format,
-      payload: { conversationName, messages, mediaFiles, exportDate }
-    }, (resp) => {
+      payload: { conversationName, messages, mediaFiles, exportDate, sourceUrl, history: { reason: history.reason, warning: history.warning, since: history.since }, checkpoint: candidate ? { key: checkpointKey, value: candidate } : null }
+    });
       if (resp && resp.success) {
-        showProgress(`✅ Exported! Saved as ${resp.filename}`, 100, 'done');
-        setTimeout(hideProgress, 4000);
+        showProgress(`Saved as ${resp.filename}. ${history.warning || ''} ${resp.checkpointWarning || ''}`, 100, 'done');
+        if (!history.warning) setTimeout(hideProgress, 4000);
       } else {
         showProgress('❌ Export failed: ' + (resp?.error || 'Unknown error'), 0, 'error');
         setTimeout(hideProgress, 6000);
       }
-    });
 
   } catch (err) {
+    exportInProgress = false;
+    exportController = null;
+    if (err?.name === 'AbortError') {
+      showProgress('Export cancelled.', 0, 'error');
+      setTimeout(hideProgress, 2500);
+      return;
+    }
     console.error('[GCE] Export error:', err);
     showProgress('❌ Export failed: ' + err.message, 0, 'error');
     setTimeout(hideProgress, 6000);
+  } finally {
+    if (originalPosition) restoreScrollPosition(originalPosition.container, originalPosition.distance, originalPosition.anchor);
+    exportInProgress = false;
+    exportController = null;
   }
 }
 
@@ -839,7 +1217,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     runExport({
       format: msg.format || 'txt',
       loadAll: msg.loadAll !== false,
-      includeMedia: msg.includeMedia !== false
+      includeMedia: msg.includeMedia !== false,
+      dateFrom: msg.dateFrom || '',
+      incremental: msg.incremental === true,
+      sourceUrl: msg.sourceUrl || ''
     });
     sendResponse({ received: true });
     return false;
@@ -864,7 +1245,10 @@ window.addEventListener('gce:startExport', async (e) => {
   runExport({
     format: detail.format || 'txt',
     loadAll: detail.loadAll !== false,
-    includeMedia: detail.includeMedia !== false
+    includeMedia: detail.includeMedia !== false,
+    dateFrom: detail.dateFrom || '',
+    incremental: detail.incremental === true,
+    sourceUrl: detail.sourceUrl || ''
   });
 });
 

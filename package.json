@@ -1,0 +1,9 @@
+{
+  "name": "google-chat-exporter-local",
+  "private": true,
+  "version": "2.1.4",
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "benchmark": "node benchmarks/extraction.js"
+  }
+}
