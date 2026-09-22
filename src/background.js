@@ -96,6 +96,20 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   }
 });
 
+function isSameConversationUrl(a, b) {
+  if (!a || !b) return true;
+  if (a === b) return true;
+  try {
+    const urlA = new URL(a);
+    const urlB = new URL(b);
+    if (urlA.origin !== urlB.origin) return false;
+    const clean = u => (u.pathname + u.hash).split('?')[0].replace(/\/thread\/[^/?#]+/, '');
+    return clean(urlA) === clean(urlB);
+  } catch {
+    return true;
+  }
+}
+
 // ── Message Handler (from popup & content script) ───────────
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -120,7 +134,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       try {
         if (msg.payload.sourceUrl && sender.tab?.id) {
           const tab = await chrome.tabs.get(sender.tab.id);
-          if (tab.url !== msg.payload.sourceUrl) throw new Error('Conversation changed during export. Please retry.');
+          if (tab?.url && !isSameConversationUrl(msg.payload.sourceUrl, tab.url)) {
+            throw new Error('Conversation changed during export. Please retry.');
+          }
         }
         const result = msg.format === 'html'
           ? await packageHtml(msg.payload)
@@ -310,7 +326,7 @@ async function packageTxt({ conversationName, messages, exportDate, history }) {
     `Chat:      ${name}`,
     `Messages:  ${messages.length}`,
     `Exported:  ${new Date(exportDate).toLocaleString()}`,
-    `History:   ${history?.reason || 'unspecified'}${history?.warning ? ' — ' + history.warning : ''}`,
+    ...(history?.warning ? [`Warning:   ${history.warning}`] : []),
     ...(history?.since ? [`New since: ${new Date(history.since).toISOString()}`] : []),
     '',
     line,

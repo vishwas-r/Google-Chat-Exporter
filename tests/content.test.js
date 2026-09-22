@@ -80,7 +80,7 @@ test('already-aborted work fails before it starts', () => {
   assert.throws(() => context.throwIfAborted(controller.signal), { name: 'AbortError' });
 });
 
-test('virtualized history visits overlapping windows, deduplicates, and warns at idle', async () => {
+test('virtualized history visits overlapping windows, deduplicates, and completes at idle', async () => {
   const c = loadContent();
   await c.loadSelectors();
   const container = { scrollHeight: 1200, clientHeight: 400, scrollTop: 800,
@@ -97,7 +97,7 @@ test('virtualized history visits overlapping windows, deduplicates, and warns at
   const result = await c.scrollToLoadAll();
   assert.deepEqual(Array.from(result.messages, m => m.text), Array.from({ length: 12 }, (_, i) => String(i)));
   assert.equal(result.reason, 'idle');
-  assert.match(result.warning, /could not be verified/);
+  assert.equal(result.warning, '');
   assert.deepEqual(waits.slice(-3), [600, 1200, 1800], 'final idle checks total 3.6 seconds');
   assert.equal(container.scrollTop, 800);
 });

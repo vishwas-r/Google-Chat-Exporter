@@ -108,8 +108,8 @@ async function benchmark(label, changedPerPass) {
     await benchmark('10% of groups changed each pass', Math.ceil(groupCount * 0.10))
   ];
   console.log(`Google Chat Exporter extraction benchmark (${groupCount} groups × ${passes} collections; median of ${rounds})`);
-  console.log(`Baseline: upstream v2 commit ${upstreamV2Commit.slice(0, 7)}`);
-  console.log('Workload'.padEnd(38), 'Upstream v2'.padStart(12), 'v2.1.4'.padStart(12), 'Speedup'.padStart(10), 'Parses (old/new)'.padStart(20));
+  const currentVersion = `v${JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version}`;
+  console.log('Workload'.padEnd(38), 'Upstream v2'.padStart(12), currentVersion.padStart(12), 'Speedup'.padStart(10), 'Parses (old/new)'.padStart(20));
   for (const result of results) {
     console.log(
       result.label.padEnd(38),

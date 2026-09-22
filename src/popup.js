@@ -118,13 +118,31 @@ async function triggerExport() {
     const includeMedia = $('include-media').checked;
     const dateFrom = $('date-from').value;
 
+    const incremental = $('incremental').checked;
+    const settings = { loadAll, includeMedia, dateFrom, incremental };
+
     const response = await chrome.runtime.sendMessage({
       action: 'popupExport',
       format,
       tabId: tab.id,
-      settings: { loadAll, includeMedia, dateFrom, incremental: $('incremental').checked }
-    });
-    if (!response?.success) throw new Error(response?.error || 'Could not start export');
+      settings
+    }).catch(err => ({ success: false, error: err?.message }));
+
+    if (!response?.success) {
+      chrome.tabs.sendMessage(tab.id, {
+        action: 'startExport',
+        format,
+        loadAll,
+        includeMedia,
+        dateFrom,
+        incremental
+      }, () => {
+        if (chrome.runtime.lastError) {
+          showStatus('❌ ' + (response?.error || 'Could not start export'), 0, 'error');
+          resetBtn();
+        }
+      });
+    }
 
   } catch (err) {
     showStatus('❌ ' + err.message, 0, 'error');

@@ -326,11 +326,10 @@ async function scrollToLoadAll(onProgress, dateFromTs = 0, signal = null) {
     }
 
     collectCurrent();
-    await sleep(150, signal);
     const warning = reason === 'date-boundary' ? '' : reason === 'limit'
       ? 'History scan reached its safety limit; export may be incomplete.'
-      : 'No further history appeared; completeness could not be verified.';
-    onProgress && onProgress(`${dedupMap.size} messages collected. ${warning}`);
+      : '';
+    onProgress && onProgress(warning ? `${dedupMap.size} messages collected. ${warning}` : `${dedupMap.size} messages collected.`);
 
     return { reason, warning, messages: [...dedupMap.values()].sort(
       (a, b) => (a.absoluteTimestamp || 0) - (b.absoluteTimestamp || 0)
@@ -461,10 +460,11 @@ function createExtractionCache(container) {
   return {
     read(group, date, parse) {
       invalidate(observer.takeRecords());
+      const groupId = group.getAttribute?.(SEL?.attrs?.groupId) || '';
       const cached = entries.get(group);
-      if (cached?.date === date) return cached.messages;
+      if (cached && cached.date === date && cached.groupId === groupId) return cached.messages;
       const messages = parse();
-      entries.set(group, { date, messages });
+      entries.set(group, { date, groupId, messages });
       return messages;
     },
     disconnect() { observer.disconnect(); entries = new WeakMap(); }
@@ -1039,6 +1039,20 @@ async function contentCheckpointScope(messages, conversationName, format, includ
   return `${host}|${account}|content|${titleHash}|${anchors.join('.')}|${mode}`;
 }
 
+function isSameConversationUrl(a, b) {
+  if (!a || !b) return true;
+  if (a === b) return true;
+  try {
+    const urlA = new URL(a);
+    const urlB = new URL(b);
+    if (urlA.origin !== urlB.origin) return false;
+    const clean = u => (u.pathname + u.hash).split('?')[0].replace(/\/thread\/[^/?#]+/, '');
+    return clean(urlA) === clean(urlB);
+  } catch {
+    return true;
+  }
+}
+
 async function runExport({ format = 'txt', loadAll = true, includeMedia = true, dateFrom = '', incremental = false, sourceUrl = '' }) {
   if (exportInProgress) return;
   exportInProgress = true;
@@ -1164,8 +1178,9 @@ async function runExport({ format = 'txt', loadAll = true, includeMedia = true, 
 
     showProgress('📦 Packaging...', 88);
     await sleep(200, signal);
-    throwIfAborted(signal);
-    if (initialUrl && location.href !== initialUrl) throw new Error('Conversation changed during export. Please retry.');
+    if (initialUrl && !isSameConversationUrl(initialUrl, location.href)) {
+      throw new Error('Conversation changed during export. Please retry.');
+    }
     const candidate = checkpointKey && loadAll && !mediaFailed && history.reason !== 'limit' && history.reason !== 'visible-only'
       ? await buildCheckpoint(messages) : null;
     if (mediaFailed) history.warning = `${history.warning || ''} Some attachments failed; the checkpoint will not advance.`.trim();

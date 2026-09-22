@@ -1,6 +1,6 @@
 # <a href="https://github.com/vishwas-r/Google-Chat-Exporter/"><img src="images/icon.svg" width="32" height="32" alt="Icon"></a> Google Chat Exporter
 
-[![Version](https://img.shields.io/badge/version-2.1.4-green.svg)](https://github.com/vishwas-r/Google-Chat-Exporter)
+[![Version](https://img.shields.io/badge/version-2.1.0-green.svg)](https://github.com/vishwas-r/Google-Chat-Exporter)
 [![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0.en.html)
 [![Maintenance](https://img.shields.io/badge/Maintained%3F-yes-green.svg)](https://github.com/vishwas-r/google-chat-exporter/graphs/commit-activity)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/vishwas-r/google-chat-exporter/pulls)
@@ -81,7 +81,7 @@ Each incremental run creates a new file. Keep earlier files to retain the comple
 
 Run `npm run benchmark` to compare repeated message extraction with upstream v2 commit `005a22f`. The synthetic workload uses 250 rendered message groups, 160 overlapping collections, alternates execution order, and reports the median of seven rounds.
 
-| Workload | Upstream v2 | v2.1.4 | Speedup | Group parses (old/new) |
+| Workload | Upstream v2 | v2.1.0 | Speedup | Group parses (old/new) |
 |---|---:|---:|---:|---:|
 | Stable overlapping viewport | 16.1 ms | 6.4 ms | **2.50×** | 40,000 / 250 |
 | 10% of groups changed each pass | 16.0 ms | 8.0 ms | **1.99×** | 40,000 / 4,225 |
