@@ -21,6 +21,7 @@ Works across **Google Chrome, Brave, Microsoft Edge**, standalone PWA windows, a
 - **Adaptive History Loading**: Loads history batch-by-batch and continues as soon as Google Chat adds the next batch.
 - **Optional Date Cutoff**: Stop loading once the export reaches a selected “messages since” date.
 - **New Since Last Export**: Optional per-conversation checkpoints for TXT, HTML, and HTML with attachments. Each run saves a separate file; the first run establishes a baseline. Checkpoints advance after a completed download. Turn the option off for a full re-export.
+- **Auto-Export on Open**: Turn it on in the popup, then open each channel you want; every channel is exported once with your current settings as soon as it loads. Switching away mid-export cancels that export so it retries on your next visit. The mode turns off after 10 minutes without a channel switch and whenever the browser restarts; an `AUTO` badge shows while it is on.
 - **Concurrent Media Downloads**: Downloads up to four attachments at a time.
 - **Bot & Card Message Support**: Extracts card notifications, webhooks, and bot messages (e.g., alert cards) seamlessly.
 - **Universal Compatibility**:

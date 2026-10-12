@@ -50,6 +50,7 @@ function loadContent() {
     MutationObserver,
     Promise,
     Set,
+    setInterval() {},
     setTimeout,
     window
   });
@@ -413,4 +414,69 @@ test('incremental export establishes baseline, exports new files, then reports n
   await c.runExport({ ...options, format: 'txt' });
   assert.equal(packages[3].messages.length, 3, 'TXT starts its own baseline rather than inheriting the media checkpoint');
   assert.equal(Object.keys(stored).length, 2);
+});
+
+test('conversation identity comes from the chat address', () => {
+  const c = loadContent();
+  c.location = { href: 'https://chat.google.com/u/1/app/space/AAA123' };
+  assert.equal(c.currentConversation().key, 'chat.google.com|1|space|AAA123');
+});
+
+test('export mode waits for a settled conversation and cancels on switch', async () => {
+  const c = loadContent();
+  await c.loadSelectors();
+  vm.runInContext('exportModeEnabled = true; exportModeLastSync = Date.now();', c);
+  let key = 'a';
+  const started = [];
+  c.isInChatFrame = () => true;
+  c.currentConversation = () => ({ key });
+  c.startAutoExport = async value => { started.push(value); };
+  let rendered = false;
+  c.document.querySelector = () => (rendered ? {} : null);
+
+  for (let i = 0; i < 4; i++) c.exportModeTick();
+  assert.deepEqual(started, [], 'no export before messages render');
+  rendered = true;
+  c.exportModeTick();
+  c.exportModeTick();
+  assert.deepEqual(started, ['a']);
+
+  const controller = new AbortController();
+  c.exportController = controller;
+  vm.runInContext('exportInProgress = true; autoExportKey = "a";', c);
+  vm.runInContext('exportController = this.exportController;', c);
+  key = 'b';
+  c.exportModeTick();
+  assert.equal(controller.signal.aborted, true);
+});
+
+test('auto-export marks a channel only after it saved', async () => {
+  const c = loadContent();
+  await c.loadSelectors();
+  const sent = [];
+  c.chrome.runtime.sendMessage = async msg => {
+    sent.push(msg.action);
+    return msg.action === 'autoExportCandidate' ? { run: true, settings: { format: 'html', incremental: true } } : {};
+  };
+  let options;
+  let outcome = 'done';
+  c.runExport = async value => { options = value; return outcome; };
+  vm.runInContext('exportModeWatch = { key: "a", stableTicks: 2, handled: true };', c);
+
+  await c.startAutoExport('a');
+  assert.equal(options.format, 'html');
+  assert.equal(options.incremental, true);
+  assert.equal(options.auto, true);
+  assert.ok(sent.includes('autoExportDone'));
+
+  sent.length = 0;
+  outcome = 'cancelled';
+  await c.startAutoExport('a');
+  assert.ok(!sent.includes('autoExportDone'));
+  assert.equal(vm.runInContext('exportModeWatch.handled', c), false, 'cancelled channel retries on revisit');
+
+  vm.runInContext('exportModeWatch.handled = true;', c);
+  outcome = 'error';
+  await c.startAutoExport('a');
+  assert.equal(vm.runInContext('exportModeWatch.handled', c), true, 'failures do not retry in a loop');
 });

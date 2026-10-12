@@ -924,6 +924,12 @@ function checkpointScope(href, format, includeMedia) {
 }
 
 function checkpointScopeFromPage(format, includeMedia, sourceUrl = '') {
+  const href = conversationHrefFromPage(sourceUrl);
+  return href ? checkpointScope(href, format, includeMedia) : '';
+}
+
+// Returns the first URL that identifies the open conversation, or ''.
+function conversationHrefFromPage(sourceUrl = '') {
   const candidates = [];
   const documents = [];
   const add = href => { if (href && !candidates.includes(href)) candidates.push(href); };
@@ -962,28 +968,28 @@ function checkpointScopeFromPage(format, includeMedia, sourceUrl = '') {
   }
 
   for (const href of candidates) {
-    const scope = checkpointScope(href, format, includeMedia);
-    if (scope) return scope;
+    if (checkpointScope(href, 'txt', false)) return href;
   }
 
   // Some Chat shells mark selection only with private CSS. Match the visible
   // header to navigation links, but accept it only when the result is unique.
   const title = cleanText(getConversationName()).toLocaleLowerCase();
   if (title) {
-    const matches = new Set();
+    const matches = new Map();
     for (const doc of documents) {
       try {
         doc.querySelectorAll('a[href]').forEach(link => {
           const label = cleanText(link.getAttribute?.('aria-label') || link.textContent).toLocaleLowerCase();
           if (label !== title) return;
           const href = link.href || link.getAttribute?.('href');
-          let scope = '';
-          try { scope = checkpointScope(new URL(href, sourceUrl || location.href).href, format, includeMedia); } catch { return; }
-          if (scope) matches.add(scope);
+          let absolute = '';
+          try { absolute = new URL(href, sourceUrl || location.href).href; } catch { return; }
+          const scope = checkpointScope(absolute, 'txt', false);
+          if (scope && ![...matches.values()].includes(scope)) matches.set(absolute, scope);
         });
       } catch { /* inaccessible or minimal document */ }
     }
-    if (matches.size === 1) return [...matches][0];
+    if (matches.size === 1) return [...matches.keys()][0];
   }
   return '';
 }
@@ -1053,8 +1059,9 @@ function isSameConversationUrl(a, b) {
   }
 }
 
-async function runExport({ format = 'txt', loadAll = true, includeMedia = true, dateFrom = '', incremental = false, sourceUrl = '' }) {
-  if (exportInProgress) return;
+// Resolves to 'done', 'empty', 'error', 'cancelled' or 'busy'.
+async function runExport({ format = 'txt', loadAll = true, includeMedia = true, dateFrom = '', incremental = false, sourceUrl = '', auto = false }) {
+  if (exportInProgress) return 'busy';
   exportInProgress = true;
   const controller = new AbortController();
   exportController = controller;
@@ -1069,7 +1076,7 @@ async function runExport({ format = 'txt', loadAll = true, includeMedia = true, 
       setTimeout(hideProgress, 5000);
       exportInProgress = false;
       exportController = null;
-      return;
+      return 'error';
     }
 
     showProgress('⏳ Preparing export...', 2);
@@ -1128,7 +1135,7 @@ async function runExport({ format = 'txt', loadAll = true, includeMedia = true, 
       setTimeout(hideProgress, 5000);
       exportInProgress = false;
       exportController = null;
-      return;
+      return 'empty';
     }
 
     showProgress(`Found ${messages.length} messages`, 35);
@@ -1195,11 +1202,14 @@ async function runExport({ format = 'txt', loadAll = true, includeMedia = true, 
       payload: { conversationName, messages, mediaFiles, exportDate, sourceUrl, history: { reason: history.reason, warning: history.warning, since: history.since }, checkpoint: candidate ? { key: checkpointKey, value: candidate } : null }
     });
       if (resp && resp.success) {
-        showProgress(`Saved as ${resp.filename}. ${history.warning || ''} ${resp.checkpointWarning || ''}`, 100, 'done');
+        const next = auto ? ' Auto-export: open the next channel.' : '';
+        showProgress(`Saved as ${resp.filename}. ${history.warning || ''} ${resp.checkpointWarning || ''}${next}`, 100, 'done');
         if (!history.warning) setTimeout(hideProgress, 4000);
+        return 'done';
       } else {
         showProgress('❌ Export failed: ' + (resp?.error || 'Unknown error'), 0, 'error');
         setTimeout(hideProgress, 6000);
+        return 'error';
       }
 
   } catch (err) {
@@ -1208,16 +1218,111 @@ async function runExport({ format = 'txt', loadAll = true, includeMedia = true, 
     if (err?.name === 'AbortError') {
       showProgress('Export cancelled.', 0, 'error');
       setTimeout(hideProgress, 2500);
-      return;
+      return 'cancelled';
     }
     console.error('[GCE] Export error:', err);
     showProgress('❌ Export failed: ' + err.message, 0, 'error');
     setTimeout(hideProgress, 6000);
+    return 'error';
   } finally {
     if (originalPosition) restoreScrollPosition(originalPosition.container, originalPosition.distance, originalPosition.anchor);
     exportInProgress = false;
     exportController = null;
   }
+}
+
+// ── Export Mode (auto-export on channel switch) ─────────────
+// The background owns the mode; this frame watches for conversation switches
+// and exports each newly opened conversation once it has rendered.
+
+const EXPORT_MODE_SYNC_MS = 15000;
+const EXPORT_MODE_ACTIVITY_MS = 30000;
+let exportModeEnabled = false;
+let exportModeWatch = { key: '', stableTicks: 0, handled: false };
+let exportModeLastSync = 0;
+let exportModeLastActivity = 0;
+let autoExportKey = '';
+
+function currentConversation() {
+  const href = conversationHrefFromPage();
+  const scope = href ? checkpointScope(href, 'txt', false) : '';
+  if (scope) return { key: scope.replace(/\|txt$/, '') };
+  // Fall back to the header name when the address carries no conversation ID.
+  const name = cleanText(getConversationName());
+  return name ? { key: `name|${name.toLocaleLowerCase()}` } : null;
+}
+
+function topFrameUrl() {
+  try { return window.top.location.href; } catch { return ''; }
+}
+
+function setExportModeEnabled(enabled) {
+  exportModeEnabled = enabled === true;
+  if (!exportModeEnabled) exportModeWatch = { key: '', stableTicks: 0, handled: false };
+}
+
+function reportExportModeActivity() {
+  exportModeLastActivity = Date.now();
+  chrome.runtime.sendMessage({ action: 'exportModeActivity' }).catch(() => {});
+}
+
+async function syncExportMode() {
+  exportModeLastSync = Date.now();
+  try {
+    const resp = await chrome.runtime.sendMessage({ action: 'getExportMode' });
+    setExportModeEnabled(resp?.enabled);
+  } catch { /* service worker restarting; retry next sync */ }
+}
+
+async function startAutoExport(key) {
+  const resp = await chrome.runtime.sendMessage({ action: 'autoExportCandidate', key }).catch(() => null);
+  // The user may have switched again while the background answered.
+  if (!resp?.run || exportModeWatch.key !== key || exportInProgress) return;
+  const settings = resp.settings || {};
+  autoExportKey = key;
+  const result = await runExport({
+    format: settings.format === 'html' ? 'html' : 'txt',
+    loadAll: settings.loadAll !== false,
+    includeMedia: settings.includeMedia !== false,
+    dateFrom: settings.dateFrom || '',
+    incremental: settings.incremental === true,
+    sourceUrl: topFrameUrl(),
+    auto: true
+  });
+  autoExportKey = '';
+  reportExportModeActivity();
+  if (result === 'done' || result === 'empty') {
+    chrome.runtime.sendMessage({ action: 'autoExportDone', key }).catch(() => {});
+  } else if (result === 'cancelled' && exportModeWatch.key === key) {
+    // Stay unmarked so returning to the channel retries; failures do not loop.
+    exportModeWatch.handled = false;
+    exportModeWatch.stableTicks = 0;
+  }
+}
+
+function exportModeTick() {
+  if (!SEL || !isInChatFrame()) return;
+  const now = Date.now();
+  if (now - exportModeLastSync > EXPORT_MODE_SYNC_MS) syncExportMode();
+  if (!exportModeEnabled) return;
+  // Long exports count as activity so export mode does not time out mid-run.
+  if (exportInProgress && now - exportModeLastActivity > EXPORT_MODE_ACTIVITY_MS) reportExportModeActivity();
+
+  const current = currentConversation();
+  if (!current) return;
+  if (current.key !== exportModeWatch.key) {
+    const switched = exportModeWatch.key !== '';
+    exportModeWatch = { key: current.key, stableTicks: 0, handled: false };
+    if (exportInProgress && exportController && autoExportKey && autoExportKey !== current.key) exportController.abort();
+    if (switched) reportExportModeActivity();
+    return;
+  }
+  if (exportModeWatch.handled || exportInProgress) return;
+  // Wait for a stable key and rendered messages so we never export the
+  // previous conversation's DOM or an empty list.
+  if (++exportModeWatch.stableTicks < 2 || !document.querySelector(SEL.messageGroups)) return;
+  exportModeWatch.handled = true;
+  startAutoExport(current.key).catch(err => console.error('[GCE] Auto-export error:', err));
 }
 
 // ── Message Listener ─────────────────────────────────────────
@@ -1237,6 +1342,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       incremental: msg.incremental === true,
       sourceUrl: msg.sourceUrl || ''
     });
+    sendResponse({ received: true });
+    return false;
+  }
+
+  if (msg.action === 'exportModeChanged') {
+    setExportModeEnabled(msg.enabled);
     sendResponse({ received: true });
     return false;
   }
@@ -1274,4 +1385,5 @@ window.addEventListener('gce:startExport', async (e) => {
   if (isInChatFrame()) {
     console.log('[Google Chat Exporter] Content script active in chat frame');
   }
+  setInterval(exportModeTick, 1000);
 })();

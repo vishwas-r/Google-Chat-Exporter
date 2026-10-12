@@ -110,9 +110,86 @@ function isSameConversationUrl(a, b) {
   }
 }
 
+// ── Export Mode ─────────────────────────────────────────────
+// Session storage clears on browser restart, so the mode never outlives it.
+
+const EXPORT_MODE_KEY = 'gceExportMode';
+const EXPORT_MODE_IDLE_MS = 10 * 60 * 1000;
+
+async function getExportMode(now = Date.now()) {
+  const state = (await chrome.storage.session.get(EXPORT_MODE_KEY))[EXPORT_MODE_KEY];
+  if (!state?.enabled) return { enabled: false, exported: [], lastActivity: 0 };
+  if (now - state.lastActivity > EXPORT_MODE_IDLE_MS) return setExportMode(false);
+  return state;
+}
+
+async function setExportMode(enabled) {
+  const state = { enabled, exported: [], lastActivity: Date.now() };
+  await chrome.storage.session.set({ [EXPORT_MODE_KEY]: state });
+  chrome.action.setBadgeText({ text: enabled ? 'AUTO' : '' }).catch(() => {});
+  if (enabled) chrome.action.setBadgeBackgroundColor({ color: '#1a73e8' }).catch(() => {});
+  const tabs = await chrome.tabs.query({ url: ['https://chat.google.com/*', 'https://mail.google.com/*'] });
+  for (const tab of tabs) {
+    chrome.tabs.sendMessage(tab.id, { action: 'exportModeChanged', enabled }).catch(() => {});
+  }
+  chrome.runtime.sendMessage({ action: 'exportModeChanged', enabled }).catch(() => {});
+  return state;
+}
+
+async function updateExportMode(update) {
+  const state = await getExportMode();
+  if (!state.enabled) return state;
+  const next = { ...state, ...update(state), lastActivity: Date.now() };
+  await chrome.storage.session.set({ [EXPORT_MODE_KEY]: next });
+  return next;
+}
+
+function handleExportModeMessage(msg) {
+  switch (msg.action) {
+    case 'getExportMode':
+      return getExportMode().then(state => ({ enabled: state.enabled, idleMs: EXPORT_MODE_IDLE_MS }));
+    case 'setExportMode':
+      return setExportMode(msg.enabled === true).then(state => ({ enabled: state.enabled }));
+    case 'exportModeActivity':
+      return updateExportMode(() => ({})).then(state => ({ enabled: state.enabled }));
+    case 'autoExportCandidate':
+      return serializeExportMode(async () => {
+        const state = await getExportMode();
+        if (!state.enabled) return { run: false };
+        const settings = await getSettings();
+        // Incremental exports are cheap to repeat; full ones run once per channel.
+        if (!settings.incremental && state.exported.includes(msg.key)) {
+          await updateExportMode(() => ({}));
+          return { run: false };
+        }
+        await updateExportMode(() => ({}));
+        return { run: true, settings };
+      });
+    case 'autoExportDone':
+      return serializeExportMode(() => updateExportMode(state => ({
+        exported: state.exported.includes(msg.key) ? state.exported : [...state.exported, msg.key]
+      }))).then(() => ({ success: true }));
+    default:
+      return null;
+  }
+}
+
+let exportModeQueue = Promise.resolve();
+function serializeExportMode(work) {
+  const next = exportModeQueue.then(work);
+  exportModeQueue = next.catch(() => {});
+  return next;
+}
+
 // ── Message Handler (from popup & content script) ───────────
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  const exportModeReply = handleExportModeMessage(msg);
+  if (exportModeReply) {
+    exportModeReply.then(sendResponse, err => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
   if (msg.action === 'popupExport') {
     // Triggered from popup button
     (async () => {

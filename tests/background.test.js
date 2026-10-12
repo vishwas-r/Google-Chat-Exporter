@@ -9,15 +9,24 @@ const vm = require('node:vm');
 function loadBackground() {
   const event = { addListener() {} };
   const stored = {};
+  const session = {};
   const chrome = {
-    runtime: { onInstalled: event, onMessage: { addListener(fn) { this.listener = fn; } }, lastError: null },
+    action: {
+      badge: '',
+      async setBadgeText({ text }) { this.badge = text; },
+      async setBadgeBackgroundColor() {}
+    },
+    runtime: { onInstalled: event, onMessage: { addListener(fn) { this.listener = fn; } }, async sendMessage() {}, lastError: null },
     contextMenus: { removeAll(callback) { callback(); }, create() {}, onClicked: event },
-    tabs: { async query() { return []; }, sendMessage() {} },
+    tabs: { async query() { return []; }, async sendMessage() {} },
     scripting: { async executeScript() {} },
     storage: { local: {
       async get(key) { return key ? { [key]: stored[key] } : { ...stored }; },
       async set(values) { Object.assign(stored, values); },
       async remove(key) { delete stored[key]; }
+    }, session: {
+      async get(key) { return { [key]: session[key] }; },
+      async set(values) { Object.assign(session, values); }
     } },
     downloads: { download(_options, callback) { callback(1); },
       async search() { return [{ state: 'complete' }]; },
@@ -135,4 +144,30 @@ test('checkpoint advances only after completed download and survives pending sta
   state = 'complete';
   await c.queueCheckpoint(125, { key, value: { timestamp: 50, fingerprints: [] } });
   assert.equal((await c.chrome.storage.local.get(key))[key].timestamp, 100, 'late older download cannot rewind checkpoint');
+});
+
+test('export mode exports each channel once, then expires when idle', async () => {
+  const c = loadBackground();
+  const sent = [];
+  c.chrome.tabs.query = async () => [{ id: 7 }];
+  c.chrome.tabs.sendMessage = async (tabId, msg) => { sent.push([tabId, msg]); };
+  const ask = msg => new Promise(resolve => c.chrome.runtime.onMessage.listener(msg, {}, resolve));
+
+  assert.equal((await ask({ action: 'setExportMode', enabled: true })).enabled, true);
+  assert.equal(c.chrome.action.badge, 'AUTO');
+  assert.equal(JSON.stringify(sent), JSON.stringify([[7, { action: 'exportModeChanged', enabled: true }]]));
+
+  assert.equal((await ask({ action: 'autoExportCandidate', key: 'space-a' })).run, true);
+  await ask({ action: 'autoExportDone', key: 'space-a' });
+  assert.equal((await ask({ action: 'autoExportCandidate', key: 'space-a' })).run, false, 'full export runs once');
+  assert.equal((await ask({ action: 'autoExportCandidate', key: 'space-b' })).run, true);
+
+  await c.chrome.storage.local.set({ gceSettings: { incremental: true } });
+  assert.equal((await ask({ action: 'autoExportCandidate', key: 'space-a' })).run, true, 'incremental repeats are cheap');
+
+  const state = (await c.chrome.storage.session.get('gceExportMode')).gceExportMode;
+  await c.chrome.storage.session.set({ gceExportMode: { ...state, lastActivity: Date.now() - 11 * 60 * 1000 } });
+  assert.equal((await ask({ action: 'getExportMode' })).enabled, false);
+  assert.equal(c.chrome.action.badge, '');
+  assert.equal((await ask({ action: 'autoExportCandidate', key: 'space-c' })).run, false);
 });
