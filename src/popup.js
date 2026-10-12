@@ -83,6 +83,26 @@ function setConvStatus(online, name) {
   label.className = 'conv-name' + (online ? '' : ' muted');
 }
 
+// ── Export Mode ──────────────────────────────────────────────
+
+async function loadExportMode() {
+  try {
+    const resp = await chrome.runtime.sendMessage({ action: 'getExportMode' });
+    $('export-mode').checked = resp?.enabled === true;
+  } catch { /* service worker unavailable */ }
+}
+
+async function toggleExportMode() {
+  const enabled = $('export-mode').checked;
+  try {
+    const resp = await chrome.runtime.sendMessage({ action: 'setExportMode', enabled });
+    $('export-mode').checked = resp?.enabled === true;
+    if (resp?.enabled) showStatus('Auto-export on: open each channel to export it.', 100, 'done');
+  } catch {
+    $('export-mode').checked = !enabled;
+  }
+}
+
 // ── Export ───────────────────────────────────────────────────
 
 let isExporting = false;
@@ -183,6 +203,10 @@ function hideStatus() {
 // ── Background message relay (progress updates from content) ─
 
 chrome.runtime.onMessage.addListener((msg) => {
+  if (msg.action === 'exportModeChanged') {
+    $('export-mode').checked = msg.enabled === true;
+    return;
+  }
   if (msg.action === 'exportStateUpdate') {
     showStatus(msg.text || '', msg.percent || 0, msg.state || 'working');
     if (msg.state === 'done') {
@@ -205,6 +229,7 @@ document.head.appendChild(style);
 document.addEventListener('DOMContentLoaded', async () => {
   await loadSettings();
   detectConversation();
+  loadExportMode();
 
   $('export-btn').addEventListener('click', triggerExport);
   $('format-select').addEventListener('change', () => {
@@ -215,4 +240,5 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('include-media').addEventListener('change', saveSettings);
   $('date-from').addEventListener('change', saveSettings);
   $('incremental').addEventListener('change', () => { updateIncrementalControls(); saveSettings(); });
+  $('export-mode').addEventListener('change', toggleExportMode);
 });
