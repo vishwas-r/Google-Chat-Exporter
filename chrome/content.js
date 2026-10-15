@@ -826,9 +826,20 @@ function guessMimeFromName(name) {
 }
 
 function decodeHtmlEntities(str) {
-  const t = document.createElement('textarea');
-  t.innerHTML = str;
-  return t.value;
+  if (!str) return '';
+  if (typeof DOMParser !== 'undefined') {
+    try {
+      const doc = new DOMParser().parseFromString(str, 'text/html');
+      return doc.body.textContent || '';
+    } catch { /* fallback below */ }
+  }
+  return str
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#x2F;/g, '/');
 }
 
 function createAbortError() {
