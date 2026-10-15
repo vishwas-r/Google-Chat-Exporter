@@ -784,12 +784,72 @@ function b64EncodeUtf8(str) {
   return btoa(unescape(encodeURIComponent(str)));
 }
 
+function dataUrlToBlob(dataUrl) {
+  const parts = dataUrl.split(',');
+  const mime = parts[0].match(/:(.*?);/)?.[1] || 'application/octet-stream';
+  const binary = atob(parts[1]);
+  const len = binary.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new Blob([bytes], { type: mime });
+}
+
+function revokeLater(url) {
+  if (!url || typeof URL === 'undefined' || typeof URL.revokeObjectURL !== 'function') return;
+  const timer = setTimeout(() => {
+    try { URL.revokeObjectURL(url); } catch {}
+  }, 60000);
+  if (timer && typeof timer.unref === 'function') timer.unref();
+}
+
 function triggerDownload(dataUrl, filename) {
+  let downloadUrl = dataUrl;
+  let objectUrlToRevoke = null;
+
+  // Firefox rejects data: URLs in downloads.download with "Access denied for URL data:...".
+  // Convert data: URL to a blob: URL when running in Firefox or when Blob/URL.createObjectURL is supported.
+  const isFirefox = typeof navigator !== 'undefined' && /firefox/i.test(navigator.userAgent || '');
+  if (isFirefox && typeof dataUrl === 'string' && dataUrl.startsWith('data:') && typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function' && typeof Blob !== 'undefined') {
+    try {
+      const blob = dataUrlToBlob(dataUrl);
+      downloadUrl = URL.createObjectURL(blob);
+      objectUrlToRevoke = downloadUrl;
+    } catch (e) {
+      console.warn('[GCE] Failed to create blob URL, falling back to data URL:', e);
+    }
+  }
+
   return new Promise((resolve, reject) => {
-    chrome.downloads.download({ url: dataUrl, filename, saveAs: false }, (dlId) => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
+    chrome.downloads.download({ url: downloadUrl, filename, saveAs: false }, (dlId) => {
+      const err = chrome.runtime.lastError;
+      if (err) {
+        // If data URL was rejected by the browser, attempt blob URL conversion and retry
+        if (!objectUrlToRevoke && typeof dataUrl === 'string' && dataUrl.startsWith('data:') && typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function' && typeof Blob !== 'undefined') {
+          try {
+            const blob = dataUrlToBlob(dataUrl);
+            const retryBlobUrl = URL.createObjectURL(blob);
+            chrome.downloads.download({ url: retryBlobUrl, filename, saveAs: false }, (retryId) => {
+              if (chrome.runtime.lastError) {
+                try { URL.revokeObjectURL(retryBlobUrl); } catch {}
+                reject(new Error(chrome.runtime.lastError.message));
+              } else {
+                revokeLater(retryBlobUrl);
+                resolve(retryId);
+              }
+            });
+            return;
+          } catch { /* proceed to original rejection */ }
+        }
+        if (objectUrlToRevoke) {
+          try { URL.revokeObjectURL(objectUrlToRevoke); } catch {}
+        }
+        reject(new Error(err.message));
       } else {
+        if (objectUrlToRevoke) {
+          revokeLater(objectUrlToRevoke);
+        }
         resolve(dlId);
       }
     });

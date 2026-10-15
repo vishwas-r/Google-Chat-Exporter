@@ -36,14 +36,17 @@ function loadBackground() {
   const context = vm.createContext({
     chrome,
     AbortController,
+    Blob,
     console,
     URL,
     Uint8Array,
     TextEncoder,
+    atob: typeof atob !== 'undefined' ? atob : (b64) => Buffer.from(b64, 'base64').toString('binary'),
     btoa,
     clearTimeout,
     encodeURIComponent,
     importScripts() {},
+    navigator: { userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
     setTimeout,
     unescape
   });
@@ -171,3 +174,18 @@ test('export mode exports each channel once, then expires when idle', async () =
   assert.equal(c.chrome.action.badge, '');
   assert.equal((await ask({ action: 'autoExportCandidate', key: 'space-c' })).run, false);
 });
+
+test('triggerDownload converts data URLs to blob URLs in Firefox', async () => {
+  const c = loadBackground();
+  c.navigator = { userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:115.0) Gecko/20100101 Firefox/115.0' };
+  let passedUrl = '';
+  c.chrome.downloads.download = (options, cb) => {
+    passedUrl = options.url;
+    cb(42);
+  };
+  const dataUrl = 'data:text/plain;charset=utf-8;base64,' + c.btoa('hello world');
+  const dlId = await c.triggerDownload(dataUrl, 'test.txt');
+  assert.equal(dlId, 42);
+  assert.ok(passedUrl.startsWith('blob:'), 'Firefox must receive a blob URL instead of data URL');
+});
+
