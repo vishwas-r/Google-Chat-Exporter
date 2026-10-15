@@ -47,7 +47,7 @@ function loadBackground() {
     setTimeout,
     unescape
   });
-  const filename = path.join(__dirname, '..', 'src', 'background.js');
+  const filename = path.join(__dirname, '..', 'chrome', 'background.js');
   vm.runInContext(fs.readFileSync(filename, 'utf8'), context, { filename });
   return context;
 }

@@ -54,7 +54,7 @@ function loadContent() {
     setTimeout,
     window
   });
-  const filename = path.join(__dirname, '..', 'src', 'content.js');
+  const filename = path.join(__dirname, '..', 'chrome', 'content.js');
   vm.runInContext(fs.readFileSync(filename, 'utf8'), context, { filename });
   return context;
 }

@@ -8,7 +8,7 @@ const { performance } = require('node:perf_hooks');
 
 const root = path.join(__dirname, '..');
 const upstreamV2Commit = '005a22f6ab493d9c2f828edf60ae97c54feab00b';
-const currentSource = fs.readFileSync(path.join(root, 'src', 'content.js'), 'utf8');
+const currentSource = fs.readFileSync(path.join(root, 'chrome', 'content.js'), 'utf8');
 const upstreamSource = execFileSync('git', ['show', `${upstreamV2Commit}:src/content.js`], { cwd: root, encoding: 'utf8' });
 const groupCount = 250;
 const passes = 160;

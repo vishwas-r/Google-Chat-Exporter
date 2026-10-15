@@ -51,13 +51,27 @@ Install directly from the official store:
 👉 **[Google Chat Exporter on Chrome Web Store](https://chromewebstore.google.com/detail/google-chat-exporter/epemodmmmilflmhgojgonhfcjfjnflgc)**
 
 ### Manual Installation (Developer Mode)
-1. Clone or download this repository.
-2. Open Chrome (or Brave / Edge) and go to `chrome://extensions/`.
-3. Toggle **Developer mode** on in the top right.
-4. Click **Load unpacked** and select the [`src/`](src) folder.
-5. The extension is installed and ready to use!
+
+#### For Google Chrome, Brave, and Microsoft Edge:
+1. Open your browser and go to `chrome://extensions/` (or `brave://extensions/`, `edge://extensions/`).
+2. Toggle **Developer mode** on in the top right.
+3. Click **Load unpacked** and select the [`chrome/`](chrome) folder.
+
+#### For Mozilla Firefox:
+1. Open Firefox and navigate to `about:debugging#/runtime/this-firefox`.
+2. Click **Load Temporary Add-on...**.
+3. Select the `manifest.json` file inside the [`firefox/`](firefox) folder.
 
 ---
+
+## 🛠️ Development & Building
+
+- **Run Tests:** `npm test`
+- **Run Benchmarks:** `npm run benchmark`
+- **Build Extension Packages:**
+  - `npm run build` (builds both Chrome and Firefox ZIP archives in `dist/`)
+  - `npm run build:chrome`
+  - `npm run build:firefox`
 
 ## 🚀 How to Use
 
@@ -82,7 +96,7 @@ Each incremental run creates a new file. Keep earlier files to retain the comple
 
 Run `npm run benchmark` to compare repeated message extraction with upstream v2 commit `005a22f`. The synthetic workload uses 250 rendered message groups, 160 overlapping collections, alternates execution order, and reports the median of seven rounds.
 
-| Workload | Upstream v2 | v2.1.0 | Speedup | Group parses (old/new) |
+| Workload | Upstream v2 | v2.2.0 | Speedup | Group parses (old/new) |
 |---|---:|---:|---:|---:|
 | Stable overlapping viewport | 16.1 ms | 6.4 ms | **2.50×** | 40,000 / 250 |
 | 10% of groups changed each pass | 16.0 ms | 8.0 ms | **1.99×** | 40,000 / 4,225 |

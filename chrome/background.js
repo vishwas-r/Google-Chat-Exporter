@@ -3,7 +3,9 @@
 // 100% private: no external requests, no telemetry, no tracking
 // ============================================================
 
-importScripts('lib/jszip.min.js');
+if (typeof importScripts === 'function' && typeof JSZip === 'undefined') {
+  importScripts('lib/jszip.min.js');
+}
 const mediaRequests = new Map();
 // Persist pending download/checkpoint associations so worker suspension is safe.
 let checkpointQueue = Promise.resolve();
@@ -115,9 +117,10 @@ function isSameConversationUrl(a, b) {
 
 const EXPORT_MODE_KEY = 'gceExportMode';
 const EXPORT_MODE_IDLE_MS = 10 * 60 * 1000;
+const sessionStore = (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.session) ? chrome.storage.session : chrome.storage.local;
 
 async function getExportMode(now = Date.now()) {
-  const state = (await chrome.storage.session.get(EXPORT_MODE_KEY))[EXPORT_MODE_KEY];
+  const state = (await sessionStore.get(EXPORT_MODE_KEY))[EXPORT_MODE_KEY];
   if (!state?.enabled) return { enabled: false, exported: [], lastActivity: 0 };
   if (now - state.lastActivity > EXPORT_MODE_IDLE_MS) return setExportMode(false);
   return state;
@@ -125,7 +128,7 @@ async function getExportMode(now = Date.now()) {
 
 async function setExportMode(enabled) {
   const state = { enabled, exported: [], lastActivity: Date.now() };
-  await chrome.storage.session.set({ [EXPORT_MODE_KEY]: state });
+  await sessionStore.set({ [EXPORT_MODE_KEY]: state });
   chrome.action.setBadgeText({ text: enabled ? 'AUTO' : '' }).catch(() => {});
   if (enabled) chrome.action.setBadgeBackgroundColor({ color: '#1a73e8' }).catch(() => {});
   const tabs = await chrome.tabs.query({ url: ['https://chat.google.com/*', 'https://mail.google.com/*'] });
@@ -140,7 +143,7 @@ async function updateExportMode(update) {
   const state = await getExportMode();
   if (!state.enabled) return state;
   const next = { ...state, ...update(state), lastActivity: Date.now() };
-  await chrome.storage.session.set({ [EXPORT_MODE_KEY]: next });
+  await sessionStore.set({ [EXPORT_MODE_KEY]: next });
   return next;
 }
 

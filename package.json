@@ -4,6 +4,9 @@
   "version": "2.2.0",
   "scripts": {
     "test": "node --test tests/*.test.js",
-    "benchmark": "node benchmarks/extraction.js"
+    "benchmark": "node benchmarks/extraction.js",
+    "build": "node scripts/build.js all",
+    "build:chrome": "node scripts/build.js chrome",
+    "build:firefox": "node scripts/build.js firefox"
   }
 }
