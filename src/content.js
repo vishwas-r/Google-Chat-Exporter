@@ -1293,18 +1293,20 @@ async function startAutoExport(key) {
   reportExportModeActivity();
   if (result === 'done' || result === 'empty') {
     chrome.runtime.sendMessage({ action: 'autoExportDone', key }).catch(() => {});
-  } else if (result === 'cancelled' && exportModeWatch.key === key) {
-    // Stay unmarked so returning to the channel retries; failures do not loop.
-    exportModeWatch.handled = false;
-    exportModeWatch.stableTicks = 0;
+  } else if (result === 'cancelled') {
+    // If cancelled manually while remaining on this channel, suppress immediate auto-retry loops.
+    // Switching channels and revisiting will reset handled state and allow retrying.
+    if (exportModeWatch.key === key) {
+      exportModeWatch.handled = true;
+    }
   }
 }
 
 function exportModeTick() {
   if (!SEL || !isInChatFrame()) return;
+  if (!exportModeEnabled) return;
   const now = Date.now();
   if (now - exportModeLastSync > EXPORT_MODE_SYNC_MS) syncExportMode();
-  if (!exportModeEnabled) return;
   // Long exports count as activity so export mode does not time out mid-run.
   if (exportInProgress && now - exportModeLastActivity > EXPORT_MODE_ACTIVITY_MS) reportExportModeActivity();
 
@@ -1384,6 +1386,9 @@ window.addEventListener('gce:startExport', async (e) => {
   await loadSelectors();
   if (isInChatFrame()) {
     console.log('[Google Chat Exporter] Content script active in chat frame');
+    syncExportMode();
   }
-  setInterval(exportModeTick, 1000);
+  if (typeof setInterval === 'function') {
+    setInterval(exportModeTick, 1000);
+  }
 })();

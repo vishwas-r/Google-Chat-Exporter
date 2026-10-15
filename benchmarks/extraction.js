@@ -47,7 +47,7 @@ function createHarness(source) {
     clearTimeout, console: { log() {}, error() {} }, document,
     fetch: async () => ({ json: async () => selectors }), FileReader: class {},
     getComputedStyle: () => ({ overflowY: 'auto' }), Map, MutationObserver, Promise, Set,
-    setTimeout, window: { name: '', addEventListener() {}, dispatchEvent() {} }
+    setInterval: () => {}, setTimeout, window: { name: '', addEventListener() {}, dispatchEvent() {} }
   });
   vm.runInContext(source, context, { filename: 'content.js' });
   return { context, groups, setRecords(value) { records = value; } };

@@ -7,9 +7,9 @@ const test = require('node:test');
 
 const root = path.join(__dirname, '..');
 
-test('2.1 retains Gmail-integrated Chat support', () => {
+test('2.2 retains Gmail-integrated Chat support', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(root, 'src', 'manifest.json'), 'utf8'));
-  assert.equal(manifest.version, '2.1.0');
+  assert.equal(manifest.version, '2.2.0');
   const popup = fs.readFileSync(path.join(root, 'src', 'popup.html'), 'utf8');
   assert.ok(popup.includes(`v${manifest.version}`));
   assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version, manifest.version);

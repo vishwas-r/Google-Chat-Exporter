@@ -473,6 +473,12 @@ test('auto-export marks a channel only after it saved', async () => {
   outcome = 'cancelled';
   await c.startAutoExport('a');
   assert.ok(!sent.includes('autoExportDone'));
+  assert.equal(vm.runInContext('exportModeWatch.handled', c), true, 'manual cancel stays suppressed while on channel');
+
+  // Revisiting the channel clears handled and allows retry
+  vm.runInContext('exportModeWatch = { key: "b", stableTicks: 0, handled: false }; exportModeEnabled = true;', c);
+  c.currentConversation = () => ({ key: 'a' });
+  c.exportModeTick();
   assert.equal(vm.runInContext('exportModeWatch.handled', c), false, 'cancelled channel retries on revisit');
 
   vm.runInContext('exportModeWatch.handled = true;', c);
@@ -480,3 +486,15 @@ test('auto-export marks a channel only after it saved', async () => {
   await c.startAutoExport('a');
   assert.equal(vm.runInContext('exportModeWatch.handled', c), true, 'failures do not retry in a loop');
 });
+
+test('export mode tick does not poll background when disabled', async () => {
+  const c = loadContent();
+  await c.loadSelectors();
+  let polled = false;
+  c.chrome.runtime.sendMessage = async () => { polled = true; return {}; };
+  c.isInChatFrame = () => true;
+  vm.runInContext('exportModeEnabled = false; exportModeLastSync = 0;', c);
+  c.exportModeTick();
+  assert.equal(polled, false, 'must not poll background when export mode is disabled');
+});
+

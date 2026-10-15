@@ -1,6 +1,6 @@
 # <a href="https://github.com/vishwas-r/Google-Chat-Exporter/"><img src="images/icon.svg" width="32" height="32" alt="Icon"></a> Google Chat Exporter
 
-[![Version](https://img.shields.io/badge/version-2.1.0-green.svg)](https://github.com/vishwas-r/Google-Chat-Exporter)
+[![Version](https://img.shields.io/badge/version-2.2.0-green.svg)](https://github.com/vishwas-r/Google-Chat-Exporter)
 [![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0.en.html)
 [![Maintenance](https://img.shields.io/badge/Maintained%3F-yes-green.svg)](https://github.com/vishwas-r/google-chat-exporter/graphs/commit-activity)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/vishwas-r/google-chat-exporter/pulls)
