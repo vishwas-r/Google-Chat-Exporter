@@ -25,6 +25,7 @@ test('2.2 supports Firefox Add-on with Gecko settings and background scripts', (
   assert.equal(manifest.version, '2.2.0');
   assert.equal(manifest.browser_specific_settings?.gecko?.id, 'google-chat-exporter@vishwas-r');
   assert.ok(manifest.browser_specific_settings?.gecko?.strict_min_version);
+  assert.ok(manifest.browser_specific_settings?.gecko_android?.strict_min_version);
   assert.deepEqual(manifest.browser_specific_settings?.gecko?.data_collection_permissions, { required: ['none'] });
   assert.deepEqual(manifest.background.scripts, ['lib/jszip.min.js', 'background.js']);
   const popup = fs.readFileSync(path.join(root, 'firefox', 'popup.html'), 'utf8');
